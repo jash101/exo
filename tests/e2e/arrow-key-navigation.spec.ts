@@ -12,7 +12,9 @@ async function screenshot(page: Page, name: string) {
 
 /** Get the data-thread-id of the currently selected (highlighted) row */
 async function getSelectedThreadId(page: Page): Promise<string | null> {
-  const selected = page.locator(".overflow-y-auto div[data-thread-id].bg-blue-600").first();
+  const selected = page
+    .locator(".overflow-y-auto div[data-thread-id][data-selected='true']")
+    .first();
   if (await selected.isVisible().catch(() => false)) {
     return selected.getAttribute("data-thread-id");
   }

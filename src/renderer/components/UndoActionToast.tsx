@@ -157,7 +157,7 @@ async function commitAction(item: UndoActionItem, removeFromQueue: () => void): 
       if (!item.blockedSender) break;
       const surfaceFailure = (reason: string) => {
         const detail = /insufficient authentication scopes/i.test(reason)
-          ? "Gmail blocked sign-in: please re-authorize the account so Exo can manage Gmail filters."
+          ? "Gmail blocked sign-in: please re-authorize the account so Flywheel Email can manage Gmail filters."
           : reason;
         useAppStore
           .getState()

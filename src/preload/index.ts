@@ -233,6 +233,8 @@ const api = {
       ipcRenderer.invoke("settings:validate-api-key", { apiKey }),
     validateOllamaKey: (apiKey: string): Promise<unknown> =>
       ipcRenderer.invoke("settings:validate-ollama-key", { apiKey }),
+    validateDeepseekKey: (apiKey: string): Promise<unknown> =>
+      ipcRenderer.invoke("settings:validate-deepseek-key", { apiKey }),
     getPrompts: (): Promise<unknown> => ipcRenderer.invoke("settings:get-prompts"),
     setPrompts: (prompts: {
       analysisPrompt?: string;

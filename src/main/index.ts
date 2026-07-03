@@ -398,7 +398,7 @@ ipcMain.handle("default-mail-app:get-pending", () => {
 const _db = initDatabase();
 
 // Wire up LLM service cost tracking
-import { setAnthropicServiceDb, setOllamaConfig } from "./services/llm-service";
+import { setAnthropicServiceDb, setOllamaConfig, setDeepSeekConfig } from "./services/llm-service";
 setAnthropicServiceDb(_db);
 
 // If no ANTHROPIC_API_KEY in env (e.g. packaged app with no .env), read from stored config
@@ -412,13 +412,18 @@ setAnthropicServiceDb(_db);
   if (config.ollamaCloud?.apiKey) {
     setOllamaConfig(config.ollamaCloud.apiKey);
   }
+  // Initialize DeepSeek client if configured
+  if (config.deepseek?.apiKey) {
+    setDeepSeekConfig(config.deepseek.apiKey);
+  }
 }
 
 app.whenReady().then(async () => {
-  // Set the session download path to prevent Chromium from probing ~/Downloads.
-  // app.setPath() handles the path registry, but the session's download manager
-  // has its own path that defaults to the OS download directory.
-  if (process.platform === "darwin") {
+  // Set the session download path to prevent Chromium from probing the OS
+  // download directory. app.setPath() handles the path registry, but the
+  // session's download manager has its own path that defaults to the OS download
+  // directory. This also avoids macOS TCC prompts on first launch.
+  {
     const { mkdirSync } = await import("fs");
     const safeDownloads = join(app.getPath("userData"), "downloads");
     mkdirSync(safeDownloads, { recursive: true });

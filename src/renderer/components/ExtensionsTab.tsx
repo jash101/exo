@@ -290,7 +290,7 @@ export function ExtensionsTab() {
         <div>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Extensions</h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Manage installed extensions that add functionality to Exo.
+            Manage installed extensions that add functionality to Flywheel Email.
           </p>
         </div>
         <button
@@ -853,7 +853,7 @@ export function ExtensionsTab() {
               </button>
               <p className="text-xs text-gray-500 dark:text-gray-400">
                 Routes via the same Ollama Cloud / Anthropic config you already have. Tool calls
-                still execute inside Exo with the same permission gate.
+                still execute inside Flywheel Email with the same permission gate.
               </p>
             </div>
           </div>

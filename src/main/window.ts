@@ -27,9 +27,9 @@ function getInitialBackgroundColor(): string {
     const config = getConfig();
     const theme = config.theme || "system";
     const isDark = theme === "dark" || (theme === "system" && nativeTheme.shouldUseDarkColors);
-    return isDark ? "#111827" : "#f3f4f6"; // gray-900 / gray-100
+    return isDark ? "#1c1b1a" : "#f4f3f1"; // Superhuman warm charcoal / soft canvas
   } catch {
-    return "#f3f4f6"; // default to light
+    return "#f4f3f1"; // default to light
   }
 }
 
@@ -41,8 +41,13 @@ export function createWindow(): BrowserWindow {
     minHeight: 600,
     show: false,
     autoHideMenuBar: true,
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 15, y: 15 },
+    // macOS-specific: hiddenInset titlebar integrates traffic lights into content area
+    ...(process.platform === "darwin"
+      ? {
+          titleBarStyle: "hiddenInset" as const,
+          trafficLightPosition: { x: 15, y: 15 },
+        }
+      : {}),
     backgroundColor: getInitialBackgroundColor(),
     icon: getIconPath(),
     // Prevent Chromium from throttling timers in hidden windows during tests.

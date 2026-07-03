@@ -86,7 +86,7 @@ test.describe("Real-Gmail Layer 9a — cached .dev-data", () => {
     });
     page = await app.firstWindow();
     await page.waitForLoadState("domcontentloaded");
-    await page.waitForSelector("text=Exo", { timeout: 180_000 });
+    await page.waitForSelector("text=Flywheel Email", { timeout: 180_000 });
 
     // Switch to the "All" inbox sub-tab. The default sub-tab is
     // "Priority", which only shows analyzed threads that need a reply —

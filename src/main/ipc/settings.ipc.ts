@@ -19,12 +19,15 @@ import {
   resolveModelId,
   resolveAgentOllamaConfig,
   DEFAULT_OLLAMA_MODEL,
+  DEFAULT_DEEPSEEK_MODEL,
+  DEEPSEEK_CHAT_COMPLETIONS_URL,
 } from "../../shared/types";
 import { resetAnalyzer } from "./analysis.ipc";
 import { resetArchiveReadyAnalyzer } from "./archive-ready.ipc";
 import {
   resetClient,
   setOllamaConfig,
+  setDeepSeekConfig,
   getUsageStats,
   getCallHistory,
 } from "../services/llm-service";
@@ -104,23 +107,7 @@ export function getConfig(): Config {
     getStore().set("config", config);
   }
 
-  // v2 migration: set posthog defaults explicitly so we can distinguish a brand-new
-  // install (where we opt in to analytics + session replay) from a pre-existing
-  // install with no persisted posthog choice (where we opt out, to avoid silently
-  // enabling session replay on upgrade for users who never saw the wizard step).
-  if ((config.configVersion ?? 0) < 2) {
-    if (!config.posthog) {
-      config.posthog = { enabled: false, sessionReplay: false };
-    }
-    config.configVersion = 2;
-    getStore().set("config", config);
-  } else if (!config.posthog) {
-    // Fresh install at configVersion >= 2 with no persisted posthog (e.g., user
-    // hasn't completed the wizard yet) — opt in by default. Wizard will overwrite
-    // with the user's actual choice.
-    config.posthog = { enabled: true, sessionReplay: true };
-    getStore().set("config", config);
-  }
+  // v2 migration: configVersion bump kept for migration numbering consistency.
 
   // One-time migration: if user had a custom legacy `model` but no `modelConfig`,
   // map it to a per-feature config so the previous choice isn't silently dropped.
@@ -192,7 +179,7 @@ export function getSenderLookupConfig(): {
   };
 }
 
-/** Resolve provider + model for a feature, supporting Ollama Cloud routing. */
+/** Resolve provider + model for a feature, supporting Ollama Cloud and DeepSeek routing. */
 export function getFeatureModelConfig(feature: keyof ModelConfig): {
   provider: LlmProvider;
   model: string;
@@ -204,6 +191,13 @@ export function getFeatureModelConfig(feature: keyof ModelConfig): {
       config.ollamaCloud?.featureModels?.[feature] ??
       config.ollamaCloud?.defaultModel ??
       DEFAULT_OLLAMA_MODEL;
+    return { provider, model };
+  }
+  if (provider === "deepseek") {
+    const model =
+      config.deepseek?.featureModels?.[feature] ??
+      config.deepseek?.defaultModel ??
+      DEFAULT_DEEPSEEK_MODEL;
     return { provider, model };
   }
   const mc = getModelConfig();
@@ -297,6 +291,56 @@ export function registerSettingsIpc(): void {
     },
   );
 
+  // Validate a DeepSeek API key against its OpenAI-compatible endpoint
+  // (base URL https://api.deepseek.com, Bearer auth, POST /chat/completions).
+  ipcMain.handle(
+    "settings:validate-deepseek-key",
+    async (_, { apiKey }: { apiKey: string }): Promise<IpcResponse<void>> => {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10_000);
+        let res: Response;
+        try {
+          res = await fetch(DEEPSEEK_CHAT_COMPLETIONS_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model: DEFAULT_DEEPSEEK_MODEL,
+              // deepseek-v4-pro is a reasoning model — give it enough budget
+              // that the request isn't rejected before the key gets a fair test.
+              max_tokens: 4096,
+              messages: [{ role: "user", content: "hi" }],
+            }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
+
+        if (res.ok) return { success: true, data: undefined };
+        if (res.status === 401) {
+          return { success: false, error: "Invalid API key. Please check and try again." };
+        }
+        // 402 (insufficient balance), 403, and 429 all prove the key itself is
+        // valid — the account just can't complete this particular call.
+        if (res.status === 402 || res.status === 403 || res.status === 429) {
+          return { success: true, data: undefined };
+        }
+        const errText = await res.text().catch(() => "");
+        return {
+          success: false,
+          error: `DeepSeek validation failed: HTTP ${res.status}${errText ? ` — ${errText}` : ""}`,
+        };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "Unknown error";
+        return { success: false, error: `DeepSeek validation failed: ${msg}` };
+      }
+    },
+  );
+
   // Get current config
   ipcMain.handle("settings:get", async (): Promise<IpcResponse<Config>> => {
     try {
@@ -331,6 +375,25 @@ export function registerSettingsIpc(): void {
             ollamaCloud: {
               apiKey: incoming.apiKey ?? existing?.apiKey ?? "",
               defaultModel: incoming.defaultModel ?? existing?.defaultModel ?? DEFAULT_OLLAMA_MODEL,
+              featureModels: incoming.featureModels ?? existing?.featureModels,
+            },
+          };
+        }
+      }
+      // Deep-merge deepseek for the same reason as ollamaCloud: the API-key UI
+      // and the per-feature model UI write different subsets of the object.
+      if ("deepseek" in config) {
+        const incoming = config.deepseek;
+        const existing = currentConfig.deepseek;
+        if (incoming === undefined) {
+          newConfig = { ...newConfig, deepseek: undefined };
+        } else {
+          newConfig = {
+            ...newConfig,
+            deepseek: {
+              apiKey: incoming.apiKey ?? existing?.apiKey ?? "",
+              defaultModel:
+                incoming.defaultModel ?? existing?.defaultModel ?? DEFAULT_DEEPSEEK_MODEL,
               featureModels: incoming.featureModels ?? existing?.featureModels,
             },
           };
@@ -426,6 +489,11 @@ export function registerSettingsIpc(): void {
         setOllamaConfig(oc?.apiKey ?? "");
       }
 
+      // Propagate DeepSeek config to LLM service (same non-agent routing path).
+      if ("deepseek" in config) {
+        setDeepSeekConfig(newConfig.deepseek?.apiKey ?? "");
+      }
+
       // Propagate Ollama Cloud config to the agent framework when EITHER ollamaCloud
       // or featureProviders changes. resolveAgentOllamaConfig encapsulates the rule
       // (must have an apiKey AND agentChat must be explicitly routed to ollama-cloud).
@@ -472,6 +540,7 @@ export function registerSettingsIpc(): void {
         "modelConfig" in config ||
         "anthropicApiKey" in config ||
         "ollamaCloud" in config ||
+        "deepseek" in config ||
         "featureProviders" in config
       ) {
         resetClient();
@@ -1016,10 +1085,6 @@ export function registerSettingsIpc(): void {
   // Export logs: zip the log directory and prompt the user to save
   ipcMain.handle("settings:export-logs", async (): Promise<IpcResponse<void>> => {
     try {
-      if (process.platform !== "darwin") {
-        return { success: false, error: "Log export is currently only supported on macOS." };
-      }
-
       const { join } = await import("path");
       const { readdirSync, mkdirSync } = await import("fs");
       const { execFile } = await import("child_process");
@@ -1032,7 +1097,7 @@ export function registerSettingsIpc(): void {
         return { success: false, error: "No log files found." };
       }
 
-      const defaultName = `exo-logs-${new Date().toISOString().split("T")[0]}.zip`;
+      const defaultName = `flywheel-email-logs-${new Date().toISOString().split("T")[0]}.zip`;
       const { canceled, filePath } = await dialog.showSaveDialog({
         title: "Export Logs",
         defaultPath: defaultName,
@@ -1043,25 +1108,55 @@ export function registerSettingsIpc(): void {
         return { success: true, data: undefined };
       }
 
-      // Use macOS ditto to create a zip of the logs directory
+      // Create zip using platform-appropriate command
       await new Promise<void>((resolve, reject) => {
-        execFile(
-          "ditto",
-          ["-c", "-k", "--sequesterRsrc", logDir, filePath],
-          { timeout: 30_000 },
-          (error) => {
-            if (error) reject(error);
-            else resolve();
-          },
-        );
+        if (process.platform === "darwin") {
+          execFile(
+            "ditto",
+            ["-c", "-k", "--sequesterRsrc", logDir, filePath],
+            { timeout: 30_000 },
+            (error) => {
+              if (error) reject(error);
+              else resolve();
+            },
+          );
+        } else if (process.platform === "win32") {
+          execFile(
+            "powershell",
+            [
+              "-NoProfile",
+              "-Command",
+              `Compress-Archive -Path '${logDir}\\*' -DestinationPath '${filePath}' -Force`,
+            ],
+            { timeout: 30_000 },
+            (error) => {
+              if (error) reject(error);
+              else resolve();
+            },
+          );
+        } else {
+          // Linux / other Unix
+          execFile(
+            "zip",
+            ["-r", filePath, "."],
+            { cwd: logDir, timeout: 30_000 },
+            (error) => {
+              if (error) reject(error);
+              else resolve();
+            },
+          );
+        }
       });
 
-      // Reveal the exported file in Finder
+      // Reveal the exported file in the OS file manager
       shell.showItemInFolder(filePath);
 
       return { success: true, data: undefined };
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
     }
   });
 }

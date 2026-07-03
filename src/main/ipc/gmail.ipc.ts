@@ -79,13 +79,14 @@ export function registerGmailIpc(): void {
         const config = getConfig();
         const hasAnthropicKey = !!(process.env.ANTHROPIC_API_KEY || config.anthropicApiKey);
         const hasOllamaCloudKey = !!config.ollamaCloud?.apiKey;
+        const hasDeepSeekKey = !!config.deepseek?.apiKey;
         return {
           success: true,
           data: {
             hasCredentials: client.hasCredentials(),
             hasTokens: client.hasTokens(),
             hasAnthropicKey,
-            hasLlmProvider: hasAnthropicKey || hasOllamaCloudKey,
+            hasLlmProvider: hasAnthropicKey || hasOllamaCloudKey || hasDeepSeekKey,
           },
         };
       } catch (error) {

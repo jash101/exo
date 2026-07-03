@@ -102,7 +102,7 @@ test.describe("Real-Gmail Layer 9b — full sync", () => {
     // We don't actually drive the OAuth UI; we just verify that with
     // existing tokens, sync completes within a reasonable budget and
     // produces threads.
-    await page.waitForSelector("text=Exo", { timeout: 30_000 });
+    await page.waitForSelector("text=Flywheel Email", { timeout: 30_000 });
 
     // Wait for either: a thread to appear, or a "no emails yet" state.
     const threadAppeared = page
@@ -151,7 +151,7 @@ test.describe("Real-Gmail Layer 9b — full sync", () => {
     }
 
     // App should still be responsive
-    await expect(page.locator("text=Exo").first()).toBeVisible();
+    await expect(page.locator("text=Flywheel Email").first()).toBeVisible();
   });
 
   test("verifies we're authenticated as the test account", async () => {
