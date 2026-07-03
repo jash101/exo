@@ -3656,6 +3656,24 @@ export function getScheduledMessageStats(accountId?: string): { scheduled: numbe
   return { scheduled, total };
 }
 
+function parseScheduledAttachments(row: Record<string, unknown>): ComposeAttachment[] | undefined {
+  if (!row.attachments) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(row.attachments as string);
+    return Array.isArray(parsed) ? (parsed as ComposeAttachment[]) : undefined;
+  } catch (err) {
+    // A corrupt value must not poison the whole batch — getDueScheduledMessages
+    // maps every row before returning, so throwing here would stall every
+    // scheduled send behind this row (and break the list IPC). Degrade to
+    // sending without attachments and log loudly instead.
+    log.error(
+      { err, scheduled_message_id: row.id },
+      "[DB] Failed to parse scheduled_messages.attachments; treating as none",
+    );
+    return undefined;
+  }
+}
+
 function rowToScheduledMessage(row: Record<string, unknown>): ScheduledMessageRow {
   // SQLite returns NULL for missing/optional columns; coerce to undefined at the boundary.
   return {
@@ -3672,9 +3690,7 @@ function rowToScheduledMessage(row: Record<string, unknown>): ScheduledMessageRo
     bodyText: (row.bodyText as string | null) ?? undefined,
     inReplyTo: (row.inReplyTo as string | null) ?? undefined,
     references: (row.referencesHeader as string | null) ?? undefined,
-    attachments: row.attachments
-      ? (JSON.parse(row.attachments as string) as ComposeAttachment[])
-      : undefined,
+    attachments: parseScheduledAttachments(row),
     scheduledAt: row.scheduledAt as number,
     status: row.status as ScheduledMessageStatus,
     errorMessage: (row.errorMessage as string | null) ?? undefined,

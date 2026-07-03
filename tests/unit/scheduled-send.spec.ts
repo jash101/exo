@@ -434,6 +434,43 @@ test.describe("Scheduled Send - Attachments", () => {
     expect(block!).toContain("attachments: row.attachments");
   });
 
+  test("db layer persists and maps attachments (drift guard on production SQL)", () => {
+    const code = readFileSync(path.join(srcDir, "main/db/index.ts"), "utf-8");
+
+    // insertScheduledMessage: column present and bound (region-scoped — the
+    // same binding expression exists for the outbox insert too)
+    const insertStart = code.indexOf("INSERT INTO scheduled_messages");
+    expect(insertStart).toBeGreaterThan(-1);
+    const insertRegion = code.slice(insertStart, insertStart + 1200);
+    expect(insertRegion).toContain("attachments, from_address, scheduled_at");
+    expect(insertRegion).toContain("item.attachments ? JSON.stringify(item.attachments) : null");
+
+    // All three scheduled_messages SELECTs return the column (this same-line
+    // pattern is unique to the scheduled queries)
+    const selects = code.match(/attachments, from_address as fromAddress/g) || [];
+    expect(selects.length).toBeGreaterThanOrEqual(3);
+
+    // The row mapper parses defensively — corrupt JSON in one row must degrade
+    // to undefined instead of throwing and stalling the whole due batch
+    expect(code).toContain("attachments: parseScheduledAttachments(row)");
+    expect(code).toContain("Array.isArray(parsed)");
+  });
+
+  test("list IPC strips base64 content from renderer DTOs", () => {
+    const code = readFileSync(path.join(srcDir, "main/ipc/scheduled-send.ipc.ts"), "utf-8");
+    const block = extractCallBlock(code, /function rowToScheduledMessage\(/);
+    expect(block).not.toBeNull();
+    expect(block!).toContain("attachments: stripAttachmentContent(row.attachments)");
+  });
+
+  test("send and scheduleSend guard against in-flight forwarded attachment loads", () => {
+    const code = readFileSync(path.join(srcDir, "renderer/hooks/useComposeForm.ts"), "utf-8");
+    // Both early-return guards must include loadingForwardAttachments, or a
+    // forward scheduled/sent mid-load silently drops its attachments.
+    const guards = code.match(/loadingForwardAttachments \|\|/g) || [];
+    expect(guards.length).toBeGreaterThanOrEqual(2);
+  });
+
   test("attachments survive a DB round-trip on the real schema", () => {
     test.skip(!!nativeModuleError, `better-sqlite3 native module mismatch: ${nativeModuleError}`);
 

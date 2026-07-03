@@ -930,6 +930,7 @@ export type ScheduledMessage = {
   bodyText?: string;
   inReplyTo?: string;
   references?: string;
+  /** Metadata only in IPC responses — base64 `content` is stripped; the full payload stays in the main process */
   attachments?: ComposeAttachment[];
   scheduledAt: number; // Unix timestamp in ms
   status: ScheduledMessageStatus;

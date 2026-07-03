@@ -28,6 +28,23 @@ const isTestMode = process.env.EXO_TEST_MODE === "true";
 const isDemoMode = process.env.EXO_DEMO_MODE === "true";
 const useFakeData = isTestMode || isDemoMode;
 
+/**
+ * Renderer DTOs carry attachment metadata only. Forwarded attachments store
+ * multi-MB base64 in `content`; shipping that over IPC on every list/stats
+ * refresh would stall the main thread for data no list consumer reads. The
+ * send and cancel-to-draft paths read the full row in the main process.
+ */
+function stripAttachmentContent(
+  attachments: ScheduledMessageRow["attachments"],
+): ScheduledMessage["attachments"] {
+  return attachments?.map((att) => ({
+    filename: att.filename,
+    mimeType: att.mimeType,
+    path: att.path,
+    size: att.size,
+  }));
+}
+
 function rowToScheduledMessage(row: ScheduledMessageRow): ScheduledMessage {
   return {
     id: row.id,
@@ -42,7 +59,7 @@ function rowToScheduledMessage(row: ScheduledMessageRow): ScheduledMessage {
     bodyText: row.bodyText,
     inReplyTo: row.inReplyTo,
     references: row.references,
-    attachments: row.attachments,
+    attachments: stripAttachmentContent(row.attachments),
     scheduledAt: row.scheduledAt,
     status: row.status,
     errorMessage: row.errorMessage,
@@ -78,7 +95,7 @@ export function registerScheduledSendIpc(): void {
           bodyText: options.bodyText,
           inReplyTo: options.inReplyTo,
           references: options.references,
-          attachments: options.attachments,
+          attachments: stripAttachmentContent(options.attachments),
           scheduledAt: options.scheduledAt,
           status: "scheduled",
           createdAt: Date.now(),
