@@ -15,6 +15,7 @@ import type {
   MemoryType,
   DraftMemory,
   SendAsAlias,
+  ComposeAttachment,
 } from "../../shared/types";
 import { createLogger } from "../services/logger";
 import { parseAutoDraftTaskId, AUTO_DRAFT_TASK_ID_LIKE_PATTERN } from "../agents/task-id";
@@ -3488,6 +3489,7 @@ export type ScheduledMessageRow = {
   bodyText?: string;
   inReplyTo?: string;
   references?: string;
+  attachments?: ComposeAttachment[];
   scheduledAt: number;
   status: ScheduledMessageStatus;
   errorMessage?: string;
@@ -3504,9 +3506,9 @@ export function insertScheduledMessage(
     INSERT INTO scheduled_messages (
       id, account_id, type, thread_id, to_addresses, cc_addresses, bcc_addresses,
       subject, body_html, body_text, in_reply_to, references_header,
-      from_address, scheduled_at, status, created_at, updated_at
+      attachments, from_address, scheduled_at, status, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
   `);
   const now = Date.now();
   stmt.run(
@@ -3522,6 +3524,7 @@ export function insertScheduledMessage(
     item.bodyText || null,
     item.inReplyTo || null,
     item.references || null,
+    item.attachments ? JSON.stringify(item.attachments) : null,
     item.from || null,
     item.scheduledAt,
     item.createdAt,
@@ -3537,7 +3540,7 @@ export function getDueScheduledMessages(limit: number = 10): ScheduledMessageRow
            to_addresses as toAddresses, cc_addresses as ccAddresses, bcc_addresses as bccAddresses,
            subject, body_html as bodyHtml, body_text as bodyText,
            in_reply_to as inReplyTo, references_header as referencesHeader,
-           from_address as fromAddress,
+           attachments, from_address as fromAddress,
            scheduled_at as scheduledAt, status, error_message as errorMessage,
            created_at as createdAt, updated_at as updatedAt, sent_at as sentAt
     FROM scheduled_messages
@@ -3556,7 +3559,7 @@ export function getScheduledMessages(accountId?: string): ScheduledMessageRow[] 
            to_addresses as toAddresses, cc_addresses as ccAddresses, bcc_addresses as bccAddresses,
            subject, body_html as bodyHtml, body_text as bodyText,
            in_reply_to as inReplyTo, references_header as referencesHeader,
-           from_address as fromAddress,
+           attachments, from_address as fromAddress,
            scheduled_at as scheduledAt, status, error_message as errorMessage,
            created_at as createdAt, updated_at as updatedAt, sent_at as sentAt
     FROM scheduled_messages
@@ -3579,7 +3582,7 @@ export function getScheduledMessage(id: string): ScheduledMessageRow | null {
            to_addresses as toAddresses, cc_addresses as ccAddresses, bcc_addresses as bccAddresses,
            subject, body_html as bodyHtml, body_text as bodyText,
            in_reply_to as inReplyTo, references_header as referencesHeader,
-           from_address as fromAddress,
+           attachments, from_address as fromAddress,
            scheduled_at as scheduledAt, status, error_message as errorMessage,
            created_at as createdAt, updated_at as updatedAt, sent_at as sentAt
     FROM scheduled_messages
@@ -3669,6 +3672,9 @@ function rowToScheduledMessage(row: Record<string, unknown>): ScheduledMessageRo
     bodyText: (row.bodyText as string | null) ?? undefined,
     inReplyTo: (row.inReplyTo as string | null) ?? undefined,
     references: (row.referencesHeader as string | null) ?? undefined,
+    attachments: row.attachments
+      ? (JSON.parse(row.attachments as string) as ComposeAttachment[])
+      : undefined,
     scheduledAt: row.scheduledAt as number,
     status: row.status as ScheduledMessageStatus,
     errorMessage: (row.errorMessage as string | null) ?? undefined,

@@ -354,6 +354,21 @@ export const NUMBERED_MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 8,
+    name: "add_scheduled_messages_attachments_column",
+    up: (db) => {
+      // Scheduled sends silently dropped attachments because they were never
+      // persisted (outbox already had this column). ALTER only for existing
+      // DBs — fresh DBs get the column from SCHEMA.
+      const cols = db.prepare("PRAGMA table_info(scheduled_messages)").all() as Array<{
+        name: string;
+      }>;
+      if (cols.length > 0 && !cols.some((c) => c.name === "attachments")) {
+        db.exec("ALTER TABLE scheduled_messages ADD COLUMN attachments TEXT");
+      }
+    },
+  },
 ];
 
 function runNumberedMigrations(db: DatabaseInstance): void {

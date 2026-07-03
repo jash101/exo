@@ -42,6 +42,7 @@ function rowToScheduledMessage(row: ScheduledMessageRow): ScheduledMessage {
     bodyText: row.bodyText,
     inReplyTo: row.inReplyTo,
     references: row.references,
+    attachments: row.attachments,
     scheduledAt: row.scheduledAt,
     status: row.status,
     errorMessage: row.errorMessage,
@@ -77,6 +78,7 @@ export function registerScheduledSendIpc(): void {
           bodyText: options.bodyText,
           inReplyTo: options.inReplyTo,
           references: options.references,
+          attachments: options.attachments,
           scheduledAt: options.scheduledAt,
           status: "scheduled",
           createdAt: Date.now(),
@@ -111,6 +113,7 @@ export function registerScheduledSendIpc(): void {
           bodyText: options.bodyText,
           inReplyTo: options.inReplyTo,
           references: options.references,
+          attachments: options.attachments,
           scheduledAt: options.scheduledAt,
           createdAt: now,
         });
@@ -183,6 +186,7 @@ export function registerScheduledSendIpc(): void {
               threadId: row.threadId || undefined,
               inReplyTo: row.inReplyTo || undefined,
               references: row.references || undefined,
+              attachments: row.attachments,
             });
             draftId = draft.id;
             log.info(`[ScheduledSend] Created Gmail draft ${draftId} from cancelled message ${id}`);

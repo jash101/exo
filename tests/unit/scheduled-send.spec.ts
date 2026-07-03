@@ -8,9 +8,32 @@ import { test, expect } from "@playwright/test";
 import { readFileSync } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
+import type BetterSqlite3 from "better-sqlite3";
+import { SCHEMA } from "../../src/main/db/schema";
+import { runMigrations } from "../../src/main/db/migrations";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.join(__dirname, "../../src");
+
+// better-sqlite3 may be compiled for Electron's Node version rather than system Node.
+const require = createRequire(import.meta.url);
+type DB = BetterSqlite3.Database;
+let DatabaseCtor: (new (filename: string | Buffer, options?: BetterSqlite3.Options) => DB) | null =
+  null;
+let nativeModuleError: string | null = null;
+try {
+  DatabaseCtor = require("better-sqlite3");
+  const probe = new DatabaseCtor!(":memory:");
+  probe.close();
+} catch (e: unknown) {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (msg.includes("NODE_MODULE_VERSION") || msg.includes("did not self-register")) {
+    nativeModuleError = msg.split("\n")[0];
+  } else {
+    throw e;
+  }
+}
 
 // Test the ScheduleSendButton preset logic (extracted for testability)
 function getSchedulePresets(
@@ -343,6 +366,145 @@ test.describe("Scheduled Send - Schema Validation", () => {
     expect(appCode).toContain("scheduledSend.removeAllListeners");
     expect(appCode).toContain("scheduledSend.stats()");
     expect(appCode).toContain("scheduled");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Attachment persistence + pass-through (scheduled sends must not drop them)
+// ---------------------------------------------------------------------------
+
+// Extract the object-literal argument of a call like `client.sendMessage({...})`
+// from source code, so we can assert field completeness (same approach as
+// tests/unit/undo-send.spec.ts).
+function extractCallBlock(code: string, callPattern: RegExp): string | null {
+  const lines = code.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (callPattern.test(lines[i])) {
+      let braceCount = 0;
+      let started = false;
+      let block = "";
+      for (let j = i; j < lines.length; j++) {
+        for (const ch of lines[j]) {
+          if (ch === "{") {
+            braceCount++;
+            started = true;
+          }
+          if (ch === "}") braceCount--;
+        }
+        block += lines[j] + "\n";
+        if (started && braceCount === 0) return block;
+      }
+    }
+  }
+  return null;
+}
+
+test.describe("Scheduled Send - Attachments", () => {
+  test("scheduled_messages CREATE TABLE includes attachments column", () => {
+    const schema = readFileSync(path.join(srcDir, "main/db/schema.ts"), "utf-8");
+    const start = schema.indexOf("CREATE TABLE IF NOT EXISTS scheduled_messages");
+    expect(start).toBeGreaterThan(-1);
+    // Scope the assertion to this table's block — "attachments TEXT" also
+    // appears in the outbox and emails tables.
+    const block = schema.slice(start, schema.indexOf(");", start));
+    expect(block).toContain("attachments TEXT");
+  });
+
+  test("scheduling IPC persists attachments via insertScheduledMessage", () => {
+    const code = readFileSync(path.join(srcDir, "main/ipc/scheduled-send.ipc.ts"), "utf-8");
+    const block = extractCallBlock(code, /insertScheduledMessage\(\{/);
+    expect(block).not.toBeNull();
+    expect(block!).toContain("attachments: options.attachments");
+  });
+
+  test("service passes attachments through to client.sendMessage", () => {
+    const code = readFileSync(
+      path.join(srcDir, "main/services/scheduled-send-service.ts"),
+      "utf-8",
+    );
+    const block = extractCallBlock(code, /client\.sendMessage\(\{/);
+    expect(block).not.toBeNull();
+    expect(block!).toContain("attachments: item.attachments");
+  });
+
+  test("cancel-to-draft passes attachments to createFullDraft", () => {
+    const code = readFileSync(path.join(srcDir, "main/ipc/scheduled-send.ipc.ts"), "utf-8");
+    const block = extractCallBlock(code, /client\.createFullDraft\(\{/);
+    expect(block).not.toBeNull();
+    expect(block!).toContain("attachments: row.attachments");
+  });
+
+  test("attachments survive a DB round-trip on the real schema", () => {
+    test.skip(!!nativeModuleError, `better-sqlite3 native module mismatch: ${nativeModuleError}`);
+
+    const db = new DatabaseCtor!(":memory:");
+    db.exec(SCHEMA);
+    runMigrations(db);
+
+    // Satisfy the accounts(id) foreign key on scheduled_messages.
+    db.prepare(
+      "INSERT INTO accounts (id, email, display_name, is_primary, added_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("acc-1", "test@example.invalid", "Test", 1, Date.now());
+
+    const attachments = [
+      { filename: "report.pdf", mimeType: "application/pdf", path: "/tmp/report.pdf", size: 1234 },
+      { filename: "logo.png", mimeType: "image/png", content: "aGVsbG8=" },
+    ];
+    const now = Date.now();
+
+    // Same INSERT the production insertScheduledMessage uses (db/index.ts) —
+    // running it against the real SCHEMA catches column mismatches.
+    db.prepare(
+      `
+      INSERT INTO scheduled_messages (
+        id, account_id, type, thread_id, to_addresses, cc_addresses, bcc_addresses,
+        subject, body_html, body_text, in_reply_to, references_header,
+        attachments, from_address, scheduled_at, status, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+    `,
+    ).run(
+      "sched-1",
+      "acc-1",
+      "send",
+      null,
+      JSON.stringify(["to@example.com"]),
+      null,
+      null,
+      "With attachments",
+      "<p>body</p>",
+      null,
+      null,
+      null,
+      JSON.stringify(attachments),
+      null,
+      now - 1000,
+      now,
+      now,
+    );
+
+    // Same SELECT the production getDueScheduledMessages uses.
+    const row = db
+      .prepare(
+        `
+      SELECT id, account_id as accountId, type, thread_id as threadId,
+             to_addresses as toAddresses, cc_addresses as ccAddresses, bcc_addresses as bccAddresses,
+             subject, body_html as bodyHtml, body_text as bodyText,
+             in_reply_to as inReplyTo, references_header as referencesHeader,
+             attachments, from_address as fromAddress,
+             scheduled_at as scheduledAt, status, error_message as errorMessage,
+             created_at as createdAt, updated_at as updatedAt, sent_at as sentAt
+      FROM scheduled_messages
+      WHERE status = 'scheduled' AND scheduled_at <= ?
+    `,
+      )
+      .get(now) as { attachments: string | null };
+
+    expect(row).toBeDefined();
+    expect(row.attachments).not.toBeNull();
+    expect(JSON.parse(row.attachments!)).toEqual(attachments);
+
+    db.close();
   });
 });
 

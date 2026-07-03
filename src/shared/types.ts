@@ -930,6 +930,7 @@ export type ScheduledMessage = {
   bodyText?: string;
   inReplyTo?: string;
   references?: string;
+  attachments?: ComposeAttachment[];
   scheduledAt: number; // Unix timestamp in ms
   status: ScheduledMessageStatus;
   errorMessage?: string;

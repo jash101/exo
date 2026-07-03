@@ -819,6 +819,13 @@ const api = {
       threadId?: string;
       inReplyTo?: string;
       references?: string;
+      attachments?: Array<{
+        filename: string;
+        path?: string;
+        content?: string;
+        mimeType: string;
+        size?: number;
+      }>;
       scheduledAt: number;
       recipientNames?: Record<string, string>;
     }): Promise<unknown> => ipcRenderer.invoke("scheduled-send:create", options),
