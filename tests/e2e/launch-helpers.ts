@@ -7,6 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCREENSHOT_DIR = path.join(__dirname, "../../tests/screenshots");
 
 export type LaunchOptions = {
+  extraArgs?: string[];
   workerIndex?: number;
   extraEnv?: Record<string, string>;
   waitAfterLoad?: number;
@@ -21,22 +22,29 @@ export type LaunchOptions = {
 export async function launchElectronApp(
   options: LaunchOptions = {},
 ): Promise<{ app: ElectronApplication; page: Page }> {
-  const { workerIndex = 0, extraEnv = {}, waitAfterLoad } = options;
+  const { workerIndex = 0, extraEnv = {}, extraArgs = [], waitAfterLoad } = options;
+
+  const env: Record<string, string> = {
+    ...(process.env as Record<string, string>),
+    NODE_ENV: "test",
+    EXO_DEMO_MODE: "true",
+    TEST_WORKER_INDEX: String(workerIndex),
+    ...extraEnv,
+  };
+  // A leftover `export EXO_USER_DATA_DIR` (e.g. from a manual packaged run)
+  // would make every parallel e2e worker share one data dir — concurrent
+  // electron-store writes and a shared Chromium profile. E2E isolation comes
+  // from .dev-data + per-worker DBs, never from the override.
+  delete env.EXO_USER_DATA_DIR;
 
   const app = await electron.launch({
-    args: [path.join(__dirname, "../../out/main/index.js")],
-    env: {
-      ...process.env,
-      NODE_ENV: "test",
-      EXO_DEMO_MODE: "true",
-      TEST_WORKER_INDEX: String(workerIndex),
-      ...extraEnv,
-    },
+    args: [path.join(__dirname, "../../out/main/index.js"), ...extraArgs],
+    env,
   });
 
   const window = await app.firstWindow();
   await window.waitForLoadState("domcontentloaded");
-  await window.waitForSelector("text=Exo", { timeout: 15000 });
+  await window.waitForSelector("text=Flywheel Email", { timeout: 15000 });
 
   // The app defaults to the Priority tab. Switch to "All" so tests see every
   // email in the demo inbox (most tests search for specific emails by name).

@@ -109,6 +109,7 @@ class ScheduledSendService extends EventEmitter {
         threadId: item.threadId,
         inReplyTo: item.inReplyTo,
         references: item.references,
+        attachments: item.attachments,
       });
 
       updateScheduledMessageStatus(item.id, "sent");

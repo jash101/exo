@@ -1,5 +1,6 @@
 import { app, ipcMain, BrowserWindow } from "electron";
 import { GmailClient, isAuthError } from "../services/gmail-client";
+import { httpErrorStatus } from "../services/gmail-block-filter";
 import { emailSyncService, type SyncStatus, type AccountInfo } from "../services/email-sync";
 import { prefetchService } from "../services/prefetch-service";
 import { getExtensionHost } from "../extensions";
@@ -8,6 +9,7 @@ import { outboxService } from "../services/outbox-service";
 import { pendingActionsQueue } from "../services/pending-actions";
 import { isNetworkError } from "../services/network-errors";
 import {
+  getDatabase,
   getAccounts,
   saveAccount,
   removeAccount,
@@ -19,7 +21,6 @@ import {
   getEmail,
   getEmailsByThread,
   getEmailsByIds,
-  getEmailIds,
   getEmailBodies,
   updateEmailLabelIds,
   deleteEmail,
@@ -1598,7 +1599,7 @@ export function registerSyncIpc(): void {
         // Use local FTS5 search (instant)
         const searchResults = searchEmails(query, { accountId, limit: maxResults });
         const localIds = searchResults.map((r) => r.id);
-        const dashboardEmails = getEmailsByIds(localIds);
+        const dashboardEmails = getEmailsByIds(localIds, { includeBody: false });
 
         log.info(`[Search] Local FTS5 found ${dashboardEmails.length} results for "${query}"`);
         return { success: true, data: dashboardEmails };
@@ -1645,7 +1646,14 @@ export function registerSyncIpc(): void {
         }
 
         // 2. Partition into already-local vs needs-fetch
-        const localIdSet = getEmailIds(accountId);
+        const localIdSet = new Set(
+          getEmailsByIds(
+            gmailResults.map((result) => result.id),
+            { includeBody: false },
+          )
+            .filter((email) => email.accountId === accountId)
+            .map((email) => email.id),
+        );
         const needsFetch = gmailResults.filter((r) => !localIdSet.has(r.id));
 
         // 3. Batch fetch remote-only messages and save to local DB
@@ -1655,14 +1663,14 @@ export function registerSyncIpc(): void {
             needsFetch.map((r) => r.id),
             25,
           );
-          for (const email of fetched) {
-            saveEmail(email, accountId);
-          }
+          getDatabase().transaction(() => {
+            for (const email of fetched) saveEmail(email, accountId);
+          })();
         }
 
         // 4. Return all Gmail results as DashboardEmails (now all are in local DB)
         const allIds = gmailResults.map((r) => r.id);
-        const dashboardEmails = getEmailsByIds(allIds);
+        const dashboardEmails = getEmailsByIds(allIds, { includeBody: false });
 
         log.info(
           `[Search] Remote search found ${dashboardEmails.length} results for "${query}" (${needsFetch.length} newly fetched)${nextPageToken ? " [more available]" : ""}`,
@@ -1734,7 +1742,16 @@ export function registerSyncIpc(): void {
         filterId = await client.createBlockFilter(normalized);
       } catch (error) {
         log.error({ err: error, sender: normalized }, "[Block] Failed to create Gmail filter");
-        const msg = error instanceof Error ? error.message : "Unknown error";
+        // Gmail's raw 5xx message is "Internal error encountered." — useless in
+        // a toast. We've already retried with backoff by this point, so tell
+        // the user the truth: it's transient on Gmail's side, try again.
+        const status = httpErrorStatus(error);
+        const msg =
+          status !== null && status >= 500
+            ? "Gmail temporary server error — please try again"
+            : error instanceof Error
+              ? error.message
+              : "Unknown error";
         return { success: false, error: `Failed to create Gmail filter: ${msg}` };
       }
 

@@ -18,13 +18,20 @@ import {
   MODEL_TIER_IDS,
   resolveModelId,
   resolveAgentOllamaConfig,
+  resolveBackgroundAgentProviderId,
+  DEFAULT_BACKGROUND_AGENT_PROVIDER,
   DEFAULT_OLLAMA_MODEL,
+  DEFAULT_HOSTLER_HARNESS,
+  DEFAULT_DEEPSEEK_MODEL,
+  DEEPSEEK_CHAT_COMPLETIONS_URL,
+
 } from "../../shared/types";
 import { resetAnalyzer } from "./analysis.ipc";
 import { resetArchiveReadyAnalyzer } from "./archive-ready.ipc";
 import {
   resetClient,
   setOllamaConfig,
+  setDeepSeekConfig,
   getUsageStats,
   getCallHistory,
 } from "../services/llm-service";
@@ -45,6 +52,18 @@ import { getDataDir } from "../data-dir";
 import { createLogger } from "../services/logger";
 
 const log = createLogger("settings-ipc");
+
+/** True only for URLs whose host is the local machine — the one baseUrl
+ *  class safe to accept over the renderer-reachable settings IPC. */
+function isLoopbackUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
+  } catch {
+    return false;
+  }
+}
 
 let _store: Store<{ config: Config }> | null = null;
 function getStore(): Store<{ config: Config }> {
@@ -104,23 +123,7 @@ export function getConfig(): Config {
     getStore().set("config", config);
   }
 
-  // v2 migration: set posthog defaults explicitly so we can distinguish a brand-new
-  // install (where we opt in to analytics + session replay) from a pre-existing
-  // install with no persisted posthog choice (where we opt out, to avoid silently
-  // enabling session replay on upgrade for users who never saw the wizard step).
-  if ((config.configVersion ?? 0) < 2) {
-    if (!config.posthog) {
-      config.posthog = { enabled: false, sessionReplay: false };
-    }
-    config.configVersion = 2;
-    getStore().set("config", config);
-  } else if (!config.posthog) {
-    // Fresh install at configVersion >= 2 with no persisted posthog (e.g., user
-    // hasn't completed the wizard yet) — opt in by default. Wizard will overwrite
-    // with the user's actual choice.
-    config.posthog = { enabled: true, sessionReplay: true };
-    getStore().set("config", config);
-  }
+  // v2 migration: configVersion bump kept for migration numbering consistency.
 
   // One-time migration: if user had a custom legacy `model` but no `modelConfig`,
   // map it to a per-feature config so the previous choice isn't silently dropped.
@@ -192,7 +195,7 @@ export function getSenderLookupConfig(): {
   };
 }
 
-/** Resolve provider + model for a feature, supporting Ollama Cloud routing. */
+/** Resolve provider + model for a feature, supporting Ollama Cloud and DeepSeek routing. */
 export function getFeatureModelConfig(feature: keyof ModelConfig): {
   provider: LlmProvider;
   model: string;
@@ -206,8 +209,40 @@ export function getFeatureModelConfig(feature: keyof ModelConfig): {
       DEFAULT_OLLAMA_MODEL;
     return { provider, model };
   }
+  if (provider === "deepseek") {
+    const model =
+      config.deepseek?.featureModels?.[feature] ??
+      config.deepseek?.defaultModel ??
+      DEFAULT_DEEPSEEK_MODEL;
+    return { provider, model };
+  }
   const mc = getModelConfig();
   return { provider: "anthropic", model: resolveModelId(mc[feature]) };
+}
+
+/**
+ * Which agent provider background auto-drafts should launch right now.
+ *
+ * Wraps the pure resolveBackgroundAgentProviderId with the one gate it can't
+ * express: OpenCode also needs an LLM credential (its isAvailable() requires
+ * Ollama or Anthropic), and the Anthropic key may come from process.env,
+ * which the renderer-safe resolver can't read. Without this, enabling
+ * OpenCode with no credentials would fail every background draft — and each
+ * failed email is skipped for the rest of the session.
+ *
+ * The bundled opencode binary is deliberately not checked here: it ships
+ * with the app, so its absence is a broken install that should fail loudly
+ * in the provider, not silently fall back.
+ */
+export function getBackgroundAgentProviderId(): string {
+  const config = getConfig();
+  const resolved = resolveBackgroundAgentProviderId(config);
+  if (resolved === "opencode") {
+    const hasAnthropic = Boolean(config.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+    const hasOllama = Boolean(config.ollamaCloud?.apiKey);
+    if (!hasAnthropic && !hasOllama) return DEFAULT_BACKGROUND_AGENT_PROVIDER;
+  }
+  return resolved;
 }
 
 export function registerSettingsIpc(): void {
@@ -297,6 +332,56 @@ export function registerSettingsIpc(): void {
     },
   );
 
+  // Validate a DeepSeek API key against its OpenAI-compatible endpoint
+  // (base URL https://api.deepseek.com, Bearer auth, POST /chat/completions).
+  ipcMain.handle(
+    "settings:validate-deepseek-key",
+    async (_, { apiKey }: { apiKey: string }): Promise<IpcResponse<void>> => {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10_000);
+        let res: Response;
+        try {
+          res = await fetch(DEEPSEEK_CHAT_COMPLETIONS_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model: DEFAULT_DEEPSEEK_MODEL,
+              // deepseek-v4-pro is a reasoning model — give it enough budget
+              // that the request isn't rejected before the key gets a fair test.
+              max_tokens: 4096,
+              messages: [{ role: "user", content: "hi" }],
+            }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
+
+        if (res.ok) return { success: true, data: undefined };
+        if (res.status === 401) {
+          return { success: false, error: "Invalid API key. Please check and try again." };
+        }
+        // 402 (insufficient balance), 403, and 429 all prove the key itself is
+        // valid — the account just can't complete this particular call.
+        if (res.status === 402 || res.status === 403 || res.status === 429) {
+          return { success: true, data: undefined };
+        }
+        const errText = await res.text().catch(() => "");
+        return {
+          success: false,
+          error: `DeepSeek validation failed: HTTP ${res.status}${errText ? ` — ${errText}` : ""}`,
+        };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "Unknown error";
+        return { success: false, error: `DeepSeek validation failed: ${msg}` };
+      }
+    },
+  );
+
   // Get current config
   ipcMain.handle("settings:get", async (): Promise<IpcResponse<Config>> => {
     try {
@@ -336,6 +421,68 @@ export function registerSettingsIpc(): void {
           };
         }
       }
+// backgroundAgentProvider routes every background auto-draft to an
+      // agent provider. IPC payloads are compile-time-typed only, so guard
+      // the type here — a persisted non-string would wedge every future
+      // auto-draft on "Unknown provider".
+      if (
+        "backgroundAgentProvider" in config &&
+        typeof config.backgroundAgentProvider !== "string"
+      ) {
+        newConfig = {
+          ...newConfig,
+          backgroundAgentProvider: currentConfig.backgroundAgentProvider,
+        };
+      }
+      // Deep-merge hostler for the same reason as ollamaCloud: the Extensions
+      // card never sends baseUrl (a dev/test escape hatch), so a shallow
+      // merge would silently erase it on every UI save.
+      if ("hostler" in config) {
+        const incoming = config.hostler;
+        const existing = currentConfig.hostler;
+        // baseUrl redirects the Bearer API key AND every tool result (email
+        // content) to a different control plane, so it must not be settable
+        // from the renderer (untrusted email HTML renders there — a
+        // compromised renderer could silently point the provider at an
+        // attacker host). Accept it over IPC only for loopback targets (the
+        // mock-server dev flow); anything else keeps the stored value.
+        const incomingBaseUrl =
+          incoming?.baseUrl === "" || isLoopbackUrl(incoming?.baseUrl)
+            ? incoming?.baseUrl
+            : existing?.baseUrl;
+        newConfig = {
+          ...newConfig,
+          hostler: incoming
+            ? {
+                enabled: incoming.enabled,
+                apiKey: incoming.apiKey ?? existing?.apiKey ?? "",
+                harness: incoming.harness ?? existing?.harness ?? DEFAULT_HOSTLER_HARNESS,
+                model: incoming.model ?? existing?.model,
+                baseUrl: incomingBaseUrl,
+              }
+            : undefined,
+        };
+      }
+      // Deep-merge deepseek for the same reason as ollamaCloud: the API-key UI
+      // and the per-feature model UI write different subsets of the object.
+      if ("deepseek" in config) {
+        const incoming = config.deepseek;
+        const existing = currentConfig.deepseek;
+        if (incoming === undefined) {
+          newConfig = { ...newConfig, deepseek: undefined };
+        } else {
+          newConfig = {
+            ...newConfig,
+            deepseek: {
+              apiKey: incoming.apiKey ?? existing?.apiKey ?? "",
+              defaultModel:
+                incoming.defaultModel ?? existing?.defaultModel ?? DEFAULT_DEEPSEEK_MODEL,
+              featureModels: incoming.featureModels ?? existing?.featureModels,
+            },
+          };
+        }
+      }
+
       getStore().set("config", newConfig);
 
       // If githubToken changed, propagate to auto-updater immediately
@@ -419,11 +566,31 @@ export function registerSettingsIpc(): void {
         });
       }
 
+      // Propagate Hostler config to the agent framework. The provider's
+      // updateConfig() drops its cached client / agent sync and, on disable,
+      // terminates any warm cloud sessions so they stop billing.
+      if ("hostler" in config) {
+        agentCoordinator.updateConfig({
+          hostler: {
+            enabled: newConfig.hostler?.enabled ?? false,
+            apiKey: newConfig.hostler?.apiKey || undefined,
+            harness: newConfig.hostler?.harness,
+            model: newConfig.hostler?.model,
+            baseUrl: newConfig.hostler?.baseUrl,
+          },
+        });
+      }
+
       // Propagate Ollama Cloud config to LLM service whenever the apiKey/defaultModel
       // changes (used by non-agent createMessage routing).
       if ("ollamaCloud" in config) {
         const oc = newConfig.ollamaCloud;
         setOllamaConfig(oc?.apiKey ?? "");
+      }
+
+      // Propagate DeepSeek config to LLM service (same non-agent routing path).
+      if ("deepseek" in config) {
+        setDeepSeekConfig(newConfig.deepseek?.apiKey ?? "");
       }
 
       // Propagate Ollama Cloud config to the agent framework when EITHER ollamaCloud
@@ -472,6 +639,7 @@ export function registerSettingsIpc(): void {
         "modelConfig" in config ||
         "anthropicApiKey" in config ||
         "ollamaCloud" in config ||
+        "deepseek" in config ||
         "featureProviders" in config
       ) {
         resetClient();
@@ -1016,10 +1184,6 @@ export function registerSettingsIpc(): void {
   // Export logs: zip the log directory and prompt the user to save
   ipcMain.handle("settings:export-logs", async (): Promise<IpcResponse<void>> => {
     try {
-      if (process.platform !== "darwin") {
-        return { success: false, error: "Log export is currently only supported on macOS." };
-      }
-
       const { join } = await import("path");
       const { readdirSync, mkdirSync } = await import("fs");
       const { execFile } = await import("child_process");
@@ -1032,7 +1196,7 @@ export function registerSettingsIpc(): void {
         return { success: false, error: "No log files found." };
       }
 
-      const defaultName = `exo-logs-${new Date().toISOString().split("T")[0]}.zip`;
+      const defaultName = `flywheel-email-logs-${new Date().toISOString().split("T")[0]}.zip`;
       const { canceled, filePath } = await dialog.showSaveDialog({
         title: "Export Logs",
         defaultPath: defaultName,
@@ -1043,25 +1207,55 @@ export function registerSettingsIpc(): void {
         return { success: true, data: undefined };
       }
 
-      // Use macOS ditto to create a zip of the logs directory
+      // Create zip using platform-appropriate command
       await new Promise<void>((resolve, reject) => {
-        execFile(
-          "ditto",
-          ["-c", "-k", "--sequesterRsrc", logDir, filePath],
-          { timeout: 30_000 },
-          (error) => {
-            if (error) reject(error);
-            else resolve();
-          },
-        );
+        if (process.platform === "darwin") {
+          execFile(
+            "ditto",
+            ["-c", "-k", "--sequesterRsrc", logDir, filePath],
+            { timeout: 30_000 },
+            (error) => {
+              if (error) reject(error);
+              else resolve();
+            },
+          );
+        } else if (process.platform === "win32") {
+          execFile(
+            "powershell",
+            [
+              "-NoProfile",
+              "-Command",
+              `Compress-Archive -Path '${logDir}\\*' -DestinationPath '${filePath}' -Force`,
+            ],
+            { timeout: 30_000 },
+            (error) => {
+              if (error) reject(error);
+              else resolve();
+            },
+          );
+        } else {
+          // Linux / other Unix
+          execFile(
+            "zip",
+            ["-r", filePath, "."],
+            { cwd: logDir, timeout: 30_000 },
+            (error) => {
+              if (error) reject(error);
+              else resolve();
+            },
+          );
+        }
       });
 
-      // Reveal the exported file in Finder
+      // Reveal the exported file in the OS file manager
       shell.showItemInFolder(filePath);
 
       return { success: true, data: undefined };
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
     }
   });
 }

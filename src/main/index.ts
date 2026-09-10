@@ -56,12 +56,19 @@ import * as calendarExtension from "../extensions/mail-ext-calendar/src/index";
 
 // Anchor Electron's framework userData (SingletonLock, sessions, cache, IDB,
 // LocalStorage, ServiceWorkers, GPUCache) to the per-worktree `.dev-data/` in
-// dev. Without this, Electron defaults to `~/Library/Application Support/exo/`
-// — the same dir the packaged app uses — so dev runs both pollute real user
-// data and collide on the singleton lock across parallel worktrees. Must run
-// before any `app.getPath("userData")` call below.
-if (is.dev) {
+// dev, or to EXO_USER_DATA_DIR when set (packaged smoke tests). Without this,
+// Electron defaults to the packaged app's real user-data dir, so dev runs both
+// pollute real user data and collide on the singleton lock across parallel
+// worktrees. Must run before any `app.getPath("userData")` call below.
+if (is.dev || process.env.EXO_USER_DATA_DIR) {
   app.setPath("userData", getDataDir());
+}
+// Surface an active override loudly: a leftover `export EXO_USER_DATA_DIR`
+// silently redirects a production launch to a scratch dir — the user sees an
+// "empty" app and the logs land in the override dir, so without this line
+// nothing anywhere records why.
+if (process.env.EXO_USER_DATA_DIR) {
+  log.warn(`[Config] Data dir overridden by EXO_USER_DATA_DIR: ${process.env.EXO_USER_DATA_DIR}`);
 }
 
 // Skip Keychain for Chromium's internal cookie/localStorage encryption.
@@ -398,7 +405,7 @@ ipcMain.handle("default-mail-app:get-pending", () => {
 const _db = initDatabase();
 
 // Wire up LLM service cost tracking
-import { setAnthropicServiceDb, setOllamaConfig } from "./services/llm-service";
+import { setAnthropicServiceDb, setOllamaConfig, setDeepSeekConfig } from "./services/llm-service";
 setAnthropicServiceDb(_db);
 
 // If no ANTHROPIC_API_KEY in env (e.g. packaged app with no .env), read from stored config
@@ -412,13 +419,18 @@ setAnthropicServiceDb(_db);
   if (config.ollamaCloud?.apiKey) {
     setOllamaConfig(config.ollamaCloud.apiKey);
   }
+  // Initialize DeepSeek client if configured
+  if (config.deepseek?.apiKey) {
+    setDeepSeekConfig(config.deepseek.apiKey);
+  }
 }
 
 app.whenReady().then(async () => {
-  // Set the session download path to prevent Chromium from probing ~/Downloads.
-  // app.setPath() handles the path registry, but the session's download manager
-  // has its own path that defaults to the OS download directory.
-  if (process.platform === "darwin") {
+  // Set the session download path to prevent Chromium from probing the OS
+  // download directory. app.setPath() handles the path registry, but the
+  // session's download manager has its own path that defaults to the OS download
+  // directory. This also avoids macOS TCC prompts on first launch.
+  {
     const { mkdirSync } = await import("fs");
     const safeDownloads = join(app.getPath("userData"), "downloads");
     mkdirSync(safeDownloads, { recursive: true });

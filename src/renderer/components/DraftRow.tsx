@@ -94,23 +94,19 @@ export const DraftRow = React.memo(
         border-b border-gray-100 dark:border-gray-700/50 transition-colors group
         ${
           isSelected
-            ? "bg-blue-600 text-white"
+            ? "bg-blue-50 dark:bg-blue-900/20 text-gray-900 dark:text-gray-100 shadow-[inset_2px_0_0_0_#714cb6] dark:shadow-[inset_2px_0_0_0_#cbb7fb]"
             : "hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-900 dark:text-gray-100"
         }
       `}
       >
         {/* Draft indicator dot area */}
         <div className="w-5 flex-shrink-0 flex items-center justify-center">
-          <div
-            className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : "bg-orange-400"}`}
-          />
+          <div className="w-1.5 h-1.5 rounded-full bg-orange-400" />
         </div>
 
         {/* Recipients */}
         <div
-          className={`${ds.recipientWidth} truncate font-medium flex-shrink-0 ${
-            isSelected ? "text-white" : "text-gray-600 dark:text-gray-400"
-          }`}
+          className={`${ds.recipientWidth} truncate font-medium flex-shrink-0 text-gray-600 dark:text-gray-400`}
         >
           {recipients || "(no recipients)"}
         </div>
@@ -119,11 +115,7 @@ export const DraftRow = React.memo(
         <span
           className={`
         ${ds.badge} rounded flex-shrink-0 uppercase font-medium
-        ${
-          isSelected
-            ? "bg-white/20 text-white"
-            : "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300"
-        }
+        bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300
       `}
         >
           Draft
@@ -133,34 +125,20 @@ export const DraftRow = React.memo(
         <div
           className={`flex-1 min-w-0 flex items-center ${density === "compact" ? "gap-1.5" : "gap-2"}`}
         >
-          <span
-            className={`font-medium truncate ${
-              isSelected ? "text-white" : "text-gray-700 dark:text-gray-300"
-            }`}
-          >
+          <span className="font-medium truncate text-gray-700 dark:text-gray-300">
             {draft.subject || "(no subject)"}
           </span>
           {snippet && (
             <>
-              <span
-                className={`flex-shrink-0 ${isSelected ? "text-white/40" : "text-gray-300 dark:text-gray-600"}`}
-              >
-                —
-              </span>
-              <span
-                className={`truncate ${isSelected ? "text-white/60" : "text-gray-400 dark:text-gray-500"}`}
-              >
-                {snippet}
-              </span>
+              <span className="flex-shrink-0 text-gray-300 dark:text-gray-600">—</span>
+              <span className="truncate text-gray-400 dark:text-gray-500">{snippet}</span>
             </>
           )}
         </div>
 
         {/* Time */}
         <span
-          className={`${ds.time} text-right flex-shrink-0 tabular-nums ${
-            isSelected ? "text-white/60" : "text-gray-400 dark:text-gray-500"
-          }`}
+          className={`${ds.time} text-right flex-shrink-0 tabular-nums text-gray-400 dark:text-gray-500`}
         >
           {time}
         </span>

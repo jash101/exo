@@ -196,6 +196,7 @@ CREATE TABLE IF NOT EXISTS scheduled_messages (
   body_text TEXT,
   in_reply_to TEXT,
   references_header TEXT,
+  attachments TEXT,
   scheduled_at INTEGER NOT NULL,
   status TEXT DEFAULT 'scheduled',
   error_message TEXT,
@@ -357,9 +358,13 @@ CREATE INDEX IF NOT EXISTS idx_draft_memories_last_voted ON draft_memories(last_
 CREATE INDEX IF NOT EXISTS idx_emails_thread ON emails(thread_id);
 CREATE INDEX IF NOT EXISTS idx_emails_date ON emails(date);
 CREATE INDEX IF NOT EXISTS idx_emails_account ON emails(account_id);
--- Covering index for buildMergeCache (see db/index.ts) — keeps the per-account
--- merge cache rebuild served from index pages instead of row lookups.
-CREATE INDEX IF NOT EXISTS idx_emails_merge_cover ON emails(account_id, thread_id, message_id, in_reply_to);
+-- Keep inbox refresh proportional to visible mail, even with a large archive.
+CREATE INDEX IF NOT EXISTS idx_emails_inbox ON emails(account_id, thread_id)
+  WHERE label_ids IS NULL OR instr(label_ids, '"INBOX"') > 0;
+-- Covering index for thread linkage and account-scoped thread lookups — avoids
+-- reading large email body pages while building the merge cache. Supersedes the
+-- former idx_emails_merge_cover (its four columns are this index's prefix).
+CREATE INDEX IF NOT EXISTS idx_emails_all_light ON emails(account_id, thread_id, message_id, in_reply_to, date, label_ids, id);
 CREATE INDEX IF NOT EXISTS idx_analyses_needs_reply ON analyses(needs_reply);
 CREATE INDEX IF NOT EXISTS idx_drafts_status ON drafts(status);
 CREATE INDEX IF NOT EXISTS idx_sent_to_address ON sent_emails(to_address);
@@ -419,7 +424,11 @@ CREATE TRIGGER IF NOT EXISTS emails_fts_delete AFTER DELETE ON emails BEGIN
 END;
 
 -- Trigger for UPDATE
-CREATE TRIGGER IF NOT EXISTS emails_fts_update AFTER UPDATE ON emails BEGIN
+CREATE TRIGGER IF NOT EXISTS emails_fts_update
+AFTER UPDATE OF subject, body_text, from_address, to_address ON emails
+WHEN old.subject IS NOT new.subject OR old.body_text IS NOT new.body_text
+  OR old.from_address IS NOT new.from_address OR old.to_address IS NOT new.to_address
+BEGIN
   INSERT INTO emails_fts(emails_fts, rowid, subject, body_text, from_address, to_address)
   VALUES ('delete', old.rowid, old.subject, old.body_text, old.from_address, old.to_address);
   INSERT INTO emails_fts(rowid, subject, body_text, from_address, to_address)

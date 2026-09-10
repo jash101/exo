@@ -375,7 +375,15 @@ export function useComposeForm({
     IpcResponse<{ id: string; threadId: string }> | "undo-queued" | null
   > => {
     const hasAnyRecipient = to.length > 0 || cc.length > 0 || bcc.length > 0;
-    if (isSending || (!bodyText.trim() && !subject.trim()) || !hasAnyRecipient) return null;
+    // loadingForwardAttachments: sending before the forwarded attachments
+    // finish loading would silently send without them.
+    if (
+      isSending ||
+      loadingForwardAttachments ||
+      (!bodyText.trim() && !subject.trim()) ||
+      !hasAnyRecipient
+    )
+      return null;
 
     const sendOptions = buildSendOptions();
 
@@ -421,6 +429,7 @@ export function useComposeForm({
     }
   }, [
     isSending,
+    loadingForwardAttachments,
     bodyText,
     subject,
     to,
@@ -438,7 +447,15 @@ export function useComposeForm({
   const scheduleSend = useCallback(
     async (scheduledAt: number): Promise<boolean> => {
       const hasAnyRecipient = to.length > 0 || cc.length > 0 || bcc.length > 0;
-      if (isScheduling || (!bodyText.trim() && !subject.trim()) || !hasAnyRecipient) return false;
+      // loadingForwardAttachments: scheduling before the forwarded attachments
+      // finish loading would persist the message with zero attachments.
+      if (
+        isScheduling ||
+        loadingForwardAttachments ||
+        (!bodyText.trim() && !subject.trim()) ||
+        !hasAnyRecipient
+      )
+        return false;
 
       setIsScheduling(true);
       setError(null);
@@ -463,7 +480,7 @@ export function useComposeForm({
         setIsScheduling(false);
       }
     },
-    [isScheduling, bodyText, subject, to, cc, bcc, buildSendOptions],
+    [isScheduling, loadingForwardAttachments, bodyText, subject, to, cc, bcc, buildSendOptions],
   );
 
   // --- Computed ---

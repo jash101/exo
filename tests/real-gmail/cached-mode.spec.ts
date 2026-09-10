@@ -86,7 +86,7 @@ test.describe("Real-Gmail Layer 9a — cached .dev-data", () => {
     });
     page = await app.firstWindow();
     await page.waitForLoadState("domcontentloaded");
-    await page.waitForSelector("text=Exo", { timeout: 180_000 });
+    await page.waitForSelector("text=Flywheel Email", { timeout: 180_000 });
 
     // Switch to the "All" inbox sub-tab. The default sub-tab is
     // "Priority", which only shows analyzed threads that need a reply —
@@ -103,7 +103,16 @@ test.describe("Real-Gmail Layer 9a — cached .dev-data", () => {
   test.afterAll(async () => {
     if (app) {
       try {
-        await app.close();
+        // app.close() can also HANG (not throw) when the main process has
+        // stuck handles — seen intermittently with a parallel `npm run dev`
+        // instance sharing .dev-data. Race it so the SIGKILL fallback below
+        // covers hangs too, instead of blowing the 60s hook budget.
+        await Promise.race([
+          app.close(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("app.close() timed out")), 15_000),
+          ),
+        ]);
       } catch {
         const proc = app.process();
         if (proc.pid) {

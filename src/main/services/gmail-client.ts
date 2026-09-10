@@ -19,8 +19,10 @@ import type {
   SendAsAlias,
 } from "../../shared/types";
 import { getAccounts } from "../db";
+import { DATA_URI_STRIP_THRESHOLD, inlineImagePlaceholder } from "../../shared/body-sanitizer";
 import { getDataDir } from "../data-dir";
 import { extractEmail } from "../utils/address-formatting";
+import { createBlockFilter } from "./gmail-block-filter";
 import { createLogger } from "./logger";
 
 const log = createLogger("gmail");
@@ -35,10 +37,18 @@ const OLD_CONFIG_DIR = join(homedir(), ".config", "exo");
 
 /**
  * One-time migration: copy token/credential files from the old ~/.config/exo/
- * location to app.getPath("userData"). Only needed on macOS where those paths differ.
+ * location to the app's userData directory. Only relevant on platforms where
+ * those paths differ — macOS (where the app moved to ~/Library/Application Support/exo)
+ * and Windows (where the app uses %APPDATA%/exo). On Linux, the old and new
+ * paths are the same (XDG ~/.config/exo), so this is a no-op.
  * Safe to call multiple times — skips files that already exist at the destination.
  */
 export async function migrateOldConfigIfNeeded(): Promise<void> {
+  // An explicitly redirected data dir (packaged smoke tests, scratch runs)
+  // must never be seeded from the legacy location — that would copy real
+  // OAuth tokens/credentials out of production into a disposable dir.
+  if (process.env.EXO_USER_DATA_DIR) return;
+
   const newDir = getConfigDir();
   if (OLD_CONFIG_DIR === newDir) return; // Linux: paths are the same, nothing to do
 
@@ -135,6 +145,15 @@ export function isAuthError(error: unknown): boolean {
     return true;
   }
   return false;
+}
+
+/** An inline (cid:) image referenced by an email body. `size` is the decoded
+ *  byte count reported by Gmail, used to skip downloading oversized images. */
+interface InlineImageInfo {
+  mimeType: string;
+  data?: string;
+  attachmentId?: string;
+  size?: number;
 }
 
 export class GmailClient {
@@ -337,7 +356,7 @@ export class GmailClient {
             <html>
               <body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
                 <div style="text-align: center;">
-                  <h1>✓ Exo Connected</h1>
+                  <h1>✓ Flywheel Email Connected</h1>
                   <p>You can close this tab and return to the application.</p>
                 </div>
               </body>
@@ -733,10 +752,8 @@ export class GmailClient {
    * Collect inline image parts from MIME tree (parts with Content-ID headers).
    * Returns a map from Content-ID (without angle brackets) to image metadata.
    */
-  private collectInlineImages(
-    payload: gmail_v1.Schema$MessagePart,
-  ): Map<string, { mimeType: string; data?: string; attachmentId?: string }> {
-    const images = new Map<string, { mimeType: string; data?: string; attachmentId?: string }>();
+  private collectInlineImages(payload: gmail_v1.Schema$MessagePart): Map<string, InlineImageInfo> {
+    const images = new Map<string, InlineImageInfo>();
 
     const walk = (part: gmail_v1.Schema$MessagePart) => {
       const headers = part.headers || [];
@@ -749,6 +766,7 @@ export class GmailClient {
           mimeType: part.mimeType,
           data: part.body?.data ?? undefined,
           attachmentId: part.body?.attachmentId ?? undefined,
+          size: part.body?.size ?? undefined,
         });
       }
 
@@ -818,7 +836,7 @@ export class GmailClient {
    */
   private async resolveInlineImages(
     html: string,
-    inlineImages: Map<string, { mimeType: string; data?: string; attachmentId?: string }>,
+    inlineImages: Map<string, InlineImageInfo>,
     messageId: string,
   ): Promise<string> {
     if (inlineImages.size === 0) return html;
@@ -840,6 +858,22 @@ export class GmailClient {
       [...cidRefs].map(async (cid) => {
         const imageInfo = inlineImages.get(cid);
         if (!imageInfo) return;
+
+        // Oversized images would be stripped to a placeholder by saveEmail
+        // anyway (see shared/body-sanitizer.ts) — resolve them to the
+        // placeholder directly so we never download multi-MB attachments just
+        // to discard them. The stored data URI is `data:<mime>;base64,<b64>`:
+        // base64 is 4/3 of the decoded size, plus the `data:...;base64,` prefix.
+        const estimatedDataUriLength = imageInfo.size
+          ? Math.ceil(imageInfo.size / 3) * 4 + imageInfo.mimeType.length + 13
+          : undefined;
+        if (estimatedDataUriLength && estimatedDataUriLength >= DATA_URI_STRIP_THRESHOLD) {
+          replacements.set(
+            `cid:${cid}`,
+            inlineImagePlaceholder(imageInfo.mimeType, estimatedDataUriLength),
+          );
+          return;
+        }
 
         let base64Data = imageInfo.data;
 
@@ -1753,29 +1787,12 @@ export class GmailClient {
   }
 
   /**
-   * Create a Gmail filter that routes all future mail from `senderEmail` to Trash
-   * (mirrors Gmail's native "Block sender"). Why Trash and not Spam: the Filters
-   * API rejects "SPAM" in addLabelIds — only TRASH/IMPORTANT/STARRED/UNREAD plus
-   * user labels are allowed there. TRASH matches the user intent ("make this go
-   * away") and Gmail's UI block flow uses the same approach. Returns the new
+   * Create the block-sender Gmail filter (see gmail-block-filter.ts for the
+   * Trash-vs-Spam rationale and transient-500 retry behavior). Returns the
    * filter's ID so we can delete it on unblock.
    */
   async createBlockFilter(senderEmail: string): Promise<string> {
-    const gmail = this.gmail!;
-    const response = await gmail.users.settings.filters.create({
-      userId: "me",
-      requestBody: {
-        criteria: { from: senderEmail },
-        action: {
-          addLabelIds: ["TRASH"],
-          removeLabelIds: ["INBOX", "UNREAD"],
-        },
-      },
-    });
-    if (!response.data.id) {
-      throw new Error("Gmail filter creation did not return an ID");
-    }
-    return response.data.id;
+    return createBlockFilter(this.gmail!, senderEmail);
   }
 
   /** Delete a Gmail filter by ID. Idempotent — swallows 404 (filter already gone). */

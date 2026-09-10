@@ -22,12 +22,16 @@ export default defineConfig({
       fileName: () => 'agent-worker.cjs',
     },
     rollupOptions: {
-      external: [
-        'electron',
-        'better-sqlite3',
-        // Externalize all bare imports (node_modules)
-        /^[^./]/,
-      ],
+      external: (id: string) => {
+        // Entry point and relative imports (project source) are NOT external
+        if (id.startsWith(".") || id.startsWith("/") || /^[A-Za-z]:[\\/]/.test(id)) {
+          return false;
+        }
+        // Electron and native modules are always external
+        if (id === "electron" || id === "better-sqlite3") return true;
+        // All other bare imports (node_modules packages) are external
+        return true;
+      },
     },
     target: 'node20',
     minify: false,

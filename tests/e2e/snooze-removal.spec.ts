@@ -38,7 +38,7 @@ test.describe("Snooze — email must leave inbox and cursor must advance", () =>
     });
 
     // Wait for the app to fully load with emails
-    await page.waitForSelector("text=Exo", { timeout: 15000 });
+    await page.waitForSelector("text=Flywheel Email", { timeout: 15000 });
     // Priority pills were collapsed in issue #143 — wait on the stable
     // per-row data-thread-id attribute instead.
     await page.locator("[data-thread-id]").first().waitFor({ timeout: 10000 });
@@ -182,7 +182,9 @@ test.describe("Snooze — email must leave inbox and cursor must advance", () =>
     }
 
     // The selected row in the UI should be highlighted
-    const highlightedRow = page.locator(".overflow-y-auto div[data-thread-id].bg-blue-600");
+    const highlightedRow = page.locator(
+      ".overflow-y-auto div[data-thread-id][data-selected='true']",
+    );
     await expect(highlightedRow.first()).toBeVisible({ timeout: 2000 });
   });
 });

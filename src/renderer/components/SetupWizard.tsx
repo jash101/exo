@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
-import { type IpcResponse, DEFAULT_OLLAMA_MODEL } from "../../shared/types";
-import { reconfigurePostHog } from "../services/posthog";
+import {
+  type IpcResponse,
+  DEFAULT_OLLAMA_MODEL,
+  DEFAULT_DEEPSEEK_MODEL,
+} from "../../shared/types";
 
 interface SetupWizardProps {
   onComplete: () => void;
 }
 
-type Step = "loading" | "credentials" | "apikey" | "oauth" | "extensions" | "analytics";
+type Step = "loading" | "credentials" | "apikey" | "oauth" | "extensions";
 
 interface ExtensionAuthInfo {
   extensionId: string;
@@ -27,19 +30,18 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
   const [googleClientId, setGoogleClientId] = useState("");
   const [googleClientSecret, setGoogleClientSecret] = useState("");
 
-  // API key inputs. Anthropic and Ollama Cloud are LLM providers — at least
-  // one is required. Exa is an optional search backend for sender lookup;
-  // pairing it with Ollama unlocks sender lookup without an Anthropic key.
+  // API key inputs. Anthropic, DeepSeek, and Ollama Cloud are LLM providers —
+  // at least one is required. Exa is an optional search backend for sender
+  // lookup; pairing it with a non-Anthropic provider unlocks sender lookup
+  // without an Anthropic key.
   const [apiKey, setApiKey] = useState("");
   const [ollamaApiKey, setOllamaApiKey] = useState("");
+  const [deepseekApiKey, setDeepseekApiKey] = useState("");
   const [exaApiKey, setExaApiKey] = useState("");
 
   // Extension auth state
   const [extensionAuths, setExtensionAuths] = useState<ExtensionAuthInfo[]>([]);
   const [authenticatingExtension, setAuthenticatingExtension] = useState<string | null>(null);
-
-  // Analytics opt-in (default ON — session replay is bundled under analytics)
-  const [analyticsEnabled, setAnalyticsEnabled] = useState(true);
 
   // Check what's already configured and skip to the right step.
   useEffect(() => {
@@ -57,7 +59,6 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
           if (!hasLlmProvider) flow.push("apikey");
           if (!hasTokens) flow.push("oauth");
           flow.push("extensions");
-          flow.push("analytics");
           setVisibleSteps(flow);
 
           if (!hasCredentials) {
@@ -70,12 +71,12 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
             enterExtensionsStep();
           }
         } else {
-          setVisibleSteps(["credentials", "apikey", "oauth", "extensions", "analytics"]);
+          setVisibleSteps(["credentials", "apikey", "oauth", "extensions"]);
           setStep("credentials");
         }
       })
       .catch(() => {
-        setVisibleSteps(["credentials", "apikey", "oauth", "extensions", "analytics"]);
+        setVisibleSteps(["credentials", "apikey", "oauth", "extensions"]);
         setStep("credentials");
       });
   }, []);
@@ -113,14 +114,16 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
   const handleSaveApiKey = async () => {
     const trimmedAnthropic = apiKey.trim();
     const trimmedOllama = ollamaApiKey.trim();
+    const trimmedDeepseek = deepseekApiKey.trim();
     const trimmedExa = exaApiKey.trim();
     const hasAnthropic = trimmedAnthropic.length > 0;
     const hasOllama = trimmedOllama.length > 0;
+    const hasDeepseek = trimmedDeepseek.length > 0;
     const hasExa = trimmedExa.length > 0;
 
-    if (!hasAnthropic && !hasOllama) {
+    if (!hasAnthropic && !hasOllama && !hasDeepseek) {
       setError(
-        "Please enter an Anthropic or Ollama Cloud key (Exa alone is not enough — it needs an LLM to parse search results)",
+        "Please enter an Anthropic, DeepSeek, or Ollama Cloud key (Exa alone is not enough — it needs an LLM to parse search results)",
       );
       return;
     }
@@ -145,6 +148,15 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
         )) as IpcResponse<void>;
         if (!validation.success) {
           setError(`Ollama Cloud key: ${validation.error ?? "invalid"}`);
+          return;
+        }
+      }
+      if (hasDeepseek) {
+        const validation = (await window.api.settings.validateDeepseekKey(
+          trimmedDeepseek,
+        )) as IpcResponse<void>;
+        if (!validation.success) {
+          setError(`DeepSeek key: ${validation.error ?? "invalid"}`);
           return;
         }
       }
@@ -183,6 +195,33 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
             agentDrafter: "ollama-cloud",
             agentChat: "ollama-cloud",
             styleInference: "ollama-cloud",
+          };
+          if (!hasExa) {
+            settings.enableSenderLookup = false;
+          }
+        }
+      }
+      if (hasDeepseek) {
+        settings.deepseek = {
+          apiKey: trimmedDeepseek,
+          defaultModel: DEFAULT_DEEPSEEK_MODEL,
+        };
+        // DeepSeek-only path (no Anthropic and no Ollama): route the
+        // createMessage-based features to DeepSeek. Agent features stay on
+        // anthropic — the agent worker subprocess doesn't support DeepSeek —
+        // so the sidebar agent won't work until an Anthropic or Ollama key
+        // is added later in Settings.
+        if (!hasAnthropic && !hasOllama) {
+          settings.featureProviders = {
+            analysis: "deepseek",
+            drafts: "deepseek",
+            refinement: "deepseek",
+            calendaring: "deepseek",
+            archiveReady: "deepseek",
+            senderLookup: hasExa ? "deepseek" : "anthropic",
+            agentDrafter: "anthropic",
+            agentChat: "anthropic",
+            styleInference: "deepseek",
           };
           if (!hasExa) {
             settings.enableSenderLookup = false;
@@ -268,13 +307,13 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
         }
         setVisibleSteps((prev) => prev.filter((s) => s !== "extensions"));
         setIsLoading(false);
-        setStep("analytics");
+        onComplete();
       }
     } catch (err) {
       console.error("[SetupWizard] getPendingAuths failed:", err);
       setVisibleSteps((prev) => prev.filter((s) => s !== "extensions"));
       setIsLoading(false);
-      setStep("analytics");
+      onComplete();
     }
   }, []);
 
@@ -326,7 +365,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
       {/* Titlebar */}
       <div className="titlebar-drag h-12 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center px-4">
         <div className="w-20" /> {/* Space for traffic lights */}
-        <h1 className="text-lg font-semibold text-gray-800 dark:text-gray-200">Exo Setup</h1>
+        <h1 className="text-lg font-semibold text-gray-800 dark:text-gray-200">Flywheel Email Setup</h1>
       </div>
 
       {/* Content */}
@@ -344,7 +383,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
                 Google Cloud Credentials
               </h2>
               <p className="text-gray-600 dark:text-gray-400 mb-6">
-                Exo needs Google OAuth credentials to access your Gmail account. You'll need to
+                Flywheel Email needs Google OAuth credentials to access your Gmail account. You'll need to
                 create a Google Cloud project with the Gmail API enabled.
               </p>
 
@@ -426,10 +465,10 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
                 AI Provider
               </h2>
               <p className="text-gray-600 dark:text-gray-400 mb-6">
-                Exo uses AI to analyze your emails, generate drafts, and look up sender information.
-                At least one LLM provider (Anthropic or Ollama Cloud) is required; Exa is an
-                optional search backend that lets sender lookup work without Anthropic. Everything
-                here can be reconfigured later in Settings.
+                Flywheel Email uses AI to analyze your emails, generate drafts, and look up sender information.
+                At least one LLM provider (Anthropic, DeepSeek, or Ollama Cloud) is required; Exa
+                is an optional search backend that lets sender lookup work without Anthropic.
+                Everything here can be reconfigured later in Settings.
               </p>
 
               <div className="space-y-5 mb-6">
@@ -486,6 +525,32 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
 
                 <div className="border border-gray-200 dark:border-gray-600 rounded-lg p-4">
                   <div className="flex items-baseline justify-between mb-2">
+                    <h3 className="font-medium text-gray-900 dark:text-gray-100">DeepSeek</h3>
+                    <a
+                      href="https://platform.deepseek.com/api_keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-600 dark:text-blue-400 underline hover:no-underline"
+                    >
+                      platform.deepseek.com
+                    </a>
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                    Uses {DEFAULT_DEEPSEEK_MODEL} by default. If only DeepSeek is provided, the
+                    agent sidebar is unavailable and sender lookup requires an Exa key below.
+                  </p>
+                  <input
+                    type="password"
+                    value={deepseekApiKey}
+                    onChange={(e) => setDeepseekApiKey(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && !isLoading && handleSaveApiKey()}
+                    placeholder="sk-..."
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+
+                <div className="border border-gray-200 dark:border-gray-600 rounded-lg p-4">
+                  <div className="flex items-baseline justify-between mb-2">
                     <h3 className="font-medium text-gray-900 dark:text-gray-100">
                       Exa{" "}
                       <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
@@ -524,7 +589,9 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
 
               <button
                 onClick={handleSaveApiKey}
-                disabled={isLoading || (!apiKey.trim() && !ollamaApiKey.trim())}
+                disabled={
+                  isLoading || (!apiKey.trim() && !ollamaApiKey.trim() && !deepseekApiKey.trim())
+                }
                 className="w-full py-3 bg-blue-600 dark:bg-blue-500 text-white font-medium rounded-lg hover:bg-blue-700 dark:hover:bg-blue-600 transition-colors disabled:opacity-50"
               >
                 {isLoading ? "Saving..." : "Continue"}
@@ -538,7 +605,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
                 Authorize Gmail Access
               </h2>
               <p className="text-gray-600 dark:text-gray-400 mb-6">
-                Click the button below to authorize Exo to read your emails and create drafts. A
+                Click the button below to authorize Flywheel Email to read your emails and create drafts. A
                 browser window will open for you to sign in with Google.
               </p>
 
@@ -633,85 +700,11 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
               )}
 
               <button
-                onClick={() => setStep("analytics")}
+                onClick={() => onComplete()}
                 disabled={authenticatingExtension !== null}
                 className="w-full py-3 bg-blue-600 dark:bg-blue-500 text-white font-medium rounded-lg hover:bg-blue-700 dark:hover:bg-blue-600 transition-colors disabled:opacity-50"
               >
                 Continue
-              </button>
-            </>
-          )}
-
-          {step === "analytics" && (
-            <>
-              <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4">
-                Help Improve Exo
-              </h2>
-              <p className="text-gray-600 dark:text-gray-400 mb-6">
-                We collect usage data and error reports to improve the app. No email content is ever
-                sent — only app interactions and crash diagnostics. Your email address is sent so we
-                can identify you in error reports. You can change this anytime in Settings.
-              </p>
-
-              <label className="flex items-center justify-between p-4 border border-gray-200 dark:border-gray-600 rounded-lg cursor-pointer mb-6">
-                <div>
-                  <div className="font-medium text-gray-900 dark:text-gray-100">
-                    Usage Analytics
-                  </div>
-                  <div className="text-sm text-gray-500 dark:text-gray-400">
-                    Crash reports, app usage data, and session recordings for debugging
-                  </div>
-                </div>
-                <div
-                  role="switch"
-                  aria-checked={analyticsEnabled}
-                  onClick={() => setAnalyticsEnabled(!analyticsEnabled)}
-                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                    analyticsEnabled
-                      ? "bg-blue-600 dark:bg-blue-500"
-                      : "bg-gray-300 dark:bg-gray-600"
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      analyticsEnabled ? "translate-x-6" : "translate-x-1"
-                    }`}
-                  />
-                </div>
-              </label>
-
-              <button
-                onClick={async () => {
-                  setIsLoading(true);
-                  try {
-                    // Session replay is bundled with analytics — both on or both off
-                    const result = (await window.api.settings.set({
-                      posthog: { enabled: analyticsEnabled, sessionReplay: analyticsEnabled },
-                    })) as IpcResponse<void>;
-                    if (!result.success) {
-                      console.error("[SetupWizard] Failed to save analytics config");
-                      // Analytics save failure is non-critical — still complete wizard
-                    }
-                    // Only reconfigure if save succeeded — prevents runtime/persisted state divergence
-                    const apiKey = import.meta.env.VITE_POSTHOG_API_KEY;
-                    const host = import.meta.env.VITE_POSTHOG_HOST || "https://us.i.posthog.com";
-                    if (apiKey && result.success) {
-                      reconfigurePostHog({
-                        enabled: analyticsEnabled,
-                        apiKey,
-                        host,
-                        sessionReplay: analyticsEnabled,
-                      });
-                    }
-                    onComplete();
-                  } finally {
-                    setIsLoading(false);
-                  }
-                }}
-                disabled={isLoading}
-                className="w-full py-3 bg-blue-600 dark:bg-blue-500 text-white font-medium rounded-lg hover:bg-blue-700 dark:hover:bg-blue-600 transition-colors disabled:opacity-50"
-              >
-                Get Started
               </button>
             </>
           )}
