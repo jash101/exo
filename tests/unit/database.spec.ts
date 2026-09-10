@@ -412,6 +412,13 @@ function insertScheduledMessage(
     bodyText?: string;
     inReplyTo?: string;
     references?: string;
+    attachments?: Array<{
+      filename: string;
+      mimeType: string;
+      path?: string;
+      content?: string;
+      size?: number;
+    }>;
     scheduledAt: number;
     createdAt: number;
   },
@@ -422,9 +429,9 @@ function insertScheduledMessage(
     INSERT INTO scheduled_messages (
       id, account_id, type, thread_id, to_addresses, cc_addresses, bcc_addresses,
       subject, body_html, body_text, in_reply_to, references_header,
-      scheduled_at, status, created_at, updated_at
+      attachments, scheduled_at, status, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
   `,
   ).run(
     item.id,
@@ -439,6 +446,7 @@ function insertScheduledMessage(
     item.bodyText || null,
     item.inReplyTo || null,
     item.references || null,
+    item.attachments ? JSON.stringify(item.attachments) : null,
     item.scheduledAt,
     item.createdAt,
     now,
@@ -470,7 +478,7 @@ function getScheduledMessages(db: DB, accountId?: string) {
            to_addresses as toAddresses, cc_addresses as ccAddresses, bcc_addresses as bccAddresses,
            subject, body_html as bodyHtml, body_text as bodyText,
            in_reply_to as inReplyTo, references_header as referencesHeader,
-           scheduled_at as scheduledAt, status, error_message as errorMessage,
+           attachments, scheduled_at as scheduledAt, status, error_message as errorMessage,
            created_at as createdAt, updated_at as updatedAt
     FROM scheduled_messages WHERE status = 'scheduled'
   `;
@@ -484,6 +492,7 @@ function getScheduledMessages(db: DB, accountId?: string) {
     cc: r.ccAddresses ? JSON.parse(r.ccAddresses as string) : undefined,
     bcc: r.bccAddresses ? JSON.parse(r.bccAddresses as string) : undefined,
     references: r.referencesHeader,
+    attachments: r.attachments ? JSON.parse(r.attachments as string) : undefined,
   }));
 }
 
@@ -1480,6 +1489,20 @@ test.describe("Database CRUD operations", () => {
       expect(messages[0].id).toBe("sm1");
       expect(messages[0].status).toBe("scheduled");
       expect(messages[0].to).toEqual(["recipient@example.com"]);
+    });
+
+    test("attachments round-trip through insert and list", () => {
+      const attachments = [
+        { filename: "report.pdf", mimeType: "application/pdf", path: "/tmp/report.pdf", size: 42 },
+        { filename: "logo.png", mimeType: "image/png", content: "aGVsbG8=" },
+      ];
+      insertScheduledMessage(db, makeScheduledMsg({ attachments }));
+      insertScheduledMessage(db, makeScheduledMsg({ id: "sm2" }));
+
+      const messages = getScheduledMessages(db, "acct1");
+      expect(messages).toHaveLength(2);
+      expect(messages.find((m) => m.id === "sm1")!.attachments).toEqual(attachments);
+      expect(messages.find((m) => m.id === "sm2")!.attachments).toBeUndefined();
     });
 
     test("getDueScheduledMessages returns only due messages", () => {

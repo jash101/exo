@@ -381,19 +381,54 @@ export class ClaudeAgentProvider implements AgentProvider {
         maxTurns: 25,
         permissionMode: "dontAsk",
         sandbox: {
-          filesystem: {
-            denyRead: [
-              `${process.env.HOME}/Music`,
-              `${process.env.HOME}/Pictures`,
-              `${process.env.HOME}/Movies`,
-              `${process.env.HOME}/Library`,
-              "/Volumes",
-            ],
-            allowRead: [
-              // Re-allow the app's own data directory within ~/Library
-              `${process.env.HOME}/Library/Application Support/exo`,
-            ],
-          },
+          filesystem: (() => {
+            const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+            if (process.platform === "darwin") {
+              return {
+                denyRead: [
+                  `${home}/Music`,
+                  `${home}/Pictures`,
+                  `${home}/Movies`,
+                  `${home}/Library`,
+                  "/Volumes",
+                ],
+                allowRead: [
+                  // Re-allow the app's own data directory within ~/Library
+                  `${home}/Library/Application Support/exo`,
+                ],
+              };
+            }
+            if (process.platform === "win32") {
+              const appData = process.env.APPDATA ?? `${home}/AppData/Roaming`;
+              return {
+                denyRead: [
+                  `${home}/Music`,
+                  `${home}/Pictures`,
+                  `${home}/Videos`,
+                  `${home}/Documents`,
+                  `${appData}`,
+                ],
+                allowRead: [
+                  // Re-allow the app's own data directory within %APPDATA%
+                  `${appData}/exo`,
+                ],
+              };
+            }
+            // Linux and other Unix
+            return {
+              denyRead: [
+                `${home}/Music`,
+                `${home}/Pictures`,
+                `${home}/Videos`,
+                `${home}/.config`,
+                `${home}/.local`,
+              ],
+              allowRead: [
+                // Re-allow the app's own data directory within ~/.config
+                `${home}/.config/exo`,
+              ],
+            };
+          })(),
         },
         ...(bashPreToolUseHook ? { hooks: { PreToolUse: [bashPreToolUseHook] } } : {}),
         ...(claudeCodeExecutable ? { pathToClaudeCodeExecutable: claudeCodeExecutable } : {}),

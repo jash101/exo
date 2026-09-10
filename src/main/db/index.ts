@@ -15,6 +15,7 @@ import type {
   MemoryType,
   DraftMemory,
   SendAsAlias,
+  ComposeAttachment,
 } from "../../shared/types";
 import { createLogger } from "../services/logger";
 import { parseAutoDraftTaskId, AUTO_DRAFT_TASK_ID_LIKE_PATTERN } from "../agents/task-id";
@@ -3310,6 +3311,7 @@ export type ScheduledMessageRow = {
   bodyText?: string;
   inReplyTo?: string;
   references?: string;
+  attachments?: ComposeAttachment[];
   scheduledAt: number;
   status: ScheduledMessageStatus;
   errorMessage?: string;
@@ -3326,9 +3328,9 @@ export function insertScheduledMessage(
     INSERT INTO scheduled_messages (
       id, account_id, type, thread_id, to_addresses, cc_addresses, bcc_addresses,
       subject, body_html, body_text, in_reply_to, references_header,
-      from_address, scheduled_at, status, created_at, updated_at
+      attachments, from_address, scheduled_at, status, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
   `);
   const now = Date.now();
   stmt.run(
@@ -3344,6 +3346,7 @@ export function insertScheduledMessage(
     item.bodyText || null,
     item.inReplyTo || null,
     item.references || null,
+    item.attachments ? JSON.stringify(item.attachments) : null,
     item.from || null,
     item.scheduledAt,
     item.createdAt,
@@ -3359,7 +3362,7 @@ export function getDueScheduledMessages(limit: number = 10): ScheduledMessageRow
            to_addresses as toAddresses, cc_addresses as ccAddresses, bcc_addresses as bccAddresses,
            subject, body_html as bodyHtml, body_text as bodyText,
            in_reply_to as inReplyTo, references_header as referencesHeader,
-           from_address as fromAddress,
+           attachments, from_address as fromAddress,
            scheduled_at as scheduledAt, status, error_message as errorMessage,
            created_at as createdAt, updated_at as updatedAt, sent_at as sentAt
     FROM scheduled_messages
@@ -3378,7 +3381,7 @@ export function getScheduledMessages(accountId?: string): ScheduledMessageRow[] 
            to_addresses as toAddresses, cc_addresses as ccAddresses, bcc_addresses as bccAddresses,
            subject, body_html as bodyHtml, body_text as bodyText,
            in_reply_to as inReplyTo, references_header as referencesHeader,
-           from_address as fromAddress,
+           attachments, from_address as fromAddress,
            scheduled_at as scheduledAt, status, error_message as errorMessage,
            created_at as createdAt, updated_at as updatedAt, sent_at as sentAt
     FROM scheduled_messages
@@ -3401,7 +3404,7 @@ export function getScheduledMessage(id: string): ScheduledMessageRow | null {
            to_addresses as toAddresses, cc_addresses as ccAddresses, bcc_addresses as bccAddresses,
            subject, body_html as bodyHtml, body_text as bodyText,
            in_reply_to as inReplyTo, references_header as referencesHeader,
-           from_address as fromAddress,
+           attachments, from_address as fromAddress,
            scheduled_at as scheduledAt, status, error_message as errorMessage,
            created_at as createdAt, updated_at as updatedAt, sent_at as sentAt
     FROM scheduled_messages
@@ -3475,6 +3478,24 @@ export function getScheduledMessageStats(accountId?: string): { scheduled: numbe
   return { scheduled, total };
 }
 
+function parseScheduledAttachments(row: Record<string, unknown>): ComposeAttachment[] | undefined {
+  if (!row.attachments) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(row.attachments as string);
+    return Array.isArray(parsed) ? (parsed as ComposeAttachment[]) : undefined;
+  } catch (err) {
+    // A corrupt value must not poison the whole batch — getDueScheduledMessages
+    // maps every row before returning, so throwing here would stall every
+    // scheduled send behind this row (and break the list IPC). Degrade to
+    // sending without attachments and log loudly instead.
+    log.error(
+      { err, scheduled_message_id: row.id },
+      "[DB] Failed to parse scheduled_messages.attachments; treating as none",
+    );
+    return undefined;
+  }
+}
+
 function rowToScheduledMessage(row: Record<string, unknown>): ScheduledMessageRow {
   // SQLite returns NULL for missing/optional columns; coerce to undefined at the boundary.
   return {
@@ -3491,6 +3512,7 @@ function rowToScheduledMessage(row: Record<string, unknown>): ScheduledMessageRo
     bodyText: (row.bodyText as string | null) ?? undefined,
     inReplyTo: (row.inReplyTo as string | null) ?? undefined,
     references: (row.referencesHeader as string | null) ?? undefined,
+    attachments: parseScheduledAttachments(row),
     scheduledAt: row.scheduledAt as number,
     status: row.status as ScheduledMessageStatus,
     errorMessage: (row.errorMessage as string | null) ?? undefined,

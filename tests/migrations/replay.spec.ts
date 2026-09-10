@@ -116,6 +116,10 @@ test.describe("Migration replay + symmetry", () => {
       expect(draftCols.has(col), `drafts should have column ${col}`).toBe(true);
     }
 
+    // scheduled_messages.attachments: in SCHEMA for fresh DBs, added by
+    // migration v8 for existing DBs.
+    expect(listTableColumns(db, "scheduled_messages").has("attachments")).toBe(true);
+
     // All numbered migrations should be recorded as applied.
     const appliedVersions = (
       db.prepare("SELECT version FROM schema_version ORDER BY version").all() as Array<{
@@ -196,6 +200,28 @@ test.describe("Migration replay + symmetry", () => {
       expect(appliedVersions).toContain(m.version);
     }
 
+    db.close();
+  });
+
+  test("replay: pre-v8 DB gains scheduled_messages.attachments column", () => {
+    // Simulate an existing DB created before v8: the attachments column is
+    // absent and the numbered system is already at v7.
+    const db = freshDb();
+    db.exec(SCHEMA);
+    db.exec("ALTER TABLE scheduled_messages DROP COLUMN attachments");
+    db.exec("DROP TABLE IF EXISTS schema_version");
+    db.exec(`
+      CREATE TABLE schema_version (
+        version INTEGER NOT NULL UNIQUE,
+        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(7);
+    expect(listTableColumns(db, "scheduled_messages").has("attachments")).toBe(false);
+
+    runMigrations(db);
+
+    expect(listTableColumns(db, "scheduled_messages").has("attachments")).toBe(true);
     db.close();
   });
 

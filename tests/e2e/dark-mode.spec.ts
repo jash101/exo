@@ -244,7 +244,8 @@ test.describe("Dark Mode", () => {
         // Snippet is the last truncate span (subject is first)
         if (truncateSpans.length >= 2) {
           const snippet = truncateSpans[truncateSpans.length - 1];
-          // Accept text-gray-400 (unselected) or text-white/60 (selected row)
+          // Snippet uses the gray-500/gray-400 scale in both selected and
+          // unselected rows (selection is a subtle wash, not an inverted fill)
           if (
             snippet.className.includes("text-gray-400") ||
             snippet.className.includes("text-white")

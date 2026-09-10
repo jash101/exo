@@ -196,6 +196,7 @@ CREATE TABLE IF NOT EXISTS scheduled_messages (
   body_text TEXT,
   in_reply_to TEXT,
   references_header TEXT,
+  attachments TEXT,
   scheduled_at INTEGER NOT NULL,
   status TEXT DEFAULT 'scheduled',
   error_message TEXT,

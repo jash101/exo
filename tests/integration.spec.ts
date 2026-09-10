@@ -67,7 +67,7 @@ test.describe("Exo Integration Tests", () => {
 
   test("app launches and shows main window", async () => {
     // Verify the app title or header is visible
-    const title = await page.locator("text=Exo").first();
+    const title = await page.locator("text=Flywheel Email").first();
     await expect(title).toBeVisible({ timeout: 10000 });
   });
 

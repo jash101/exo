@@ -46,7 +46,7 @@ export function useSignature(accountId: string) {
   const activeSignature = availableSignatures.find((s: Signature) => s.id === activeSignatureId);
 
   const exoBrandingLine = showExoBranding
-    ? `<div style="margin-top:12px;font-size:12px;color:#999;">Sent by <a href="https://exo.email" style="color:#999;">Exo</a></div>`
+    ? `<div style="margin-top:12px;font-size:12px;color:#999;">Sent by Flywheel Email</div>`
     : "";
 
   const signatureHtml = activeSignature?.bodyHtml

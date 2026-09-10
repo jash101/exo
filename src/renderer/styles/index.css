@@ -2,7 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Custom scrollbar styles */
+/* Superhuman-style typography: crisp antialiased text throughout */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Custom scrollbar styles — slim, warm-neutral to match the Superhuman palette */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -13,21 +20,21 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: #dcd7d3;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: #a8a49e;
 }
 
 /* Dark mode scrollbar */
 .dark ::-webkit-scrollbar-thumb {
-  background: #4b5563;
+  background: #3a3938;
 }
 
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: #6b7280;
+  background: #555250;
 }
 
 /* Titlebar drag region */
@@ -55,12 +62,12 @@
 }
 
 .email-html-body a {
-  color: #2563eb;
+  color: #714cb6; /* Superhuman "Amethyst Link" */
   text-decoration: underline;
 }
 
 .email-html-body a:hover {
-  color: #1d4ed8;
+  color: #5c3a99;
 }
 
 .email-html-body table {
@@ -103,11 +110,11 @@
 
 /* Dark mode email body overrides */
 .dark .email-html-body a {
-  color: #60a5fa;
+  color: #cbb7fb; /* Superhuman "Lavender Glow" */
 }
 
 .dark .email-html-body a:hover {
-  color: #93bbfd;
+  color: #e0d5fb;
 }
 
 .dark .email-html-body blockquote {

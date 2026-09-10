@@ -110,18 +110,14 @@ const SearchResultThreadRow = memo(function SearchResultThreadRow({
       onClick={() => onClick(thread)}
       className={`w-full h-8 px-3 gap-1.5 text-xs flex items-center text-left border-b border-gray-100 dark:border-gray-700/50 cursor-pointer ${
         isSelected
-          ? "bg-blue-600 text-white"
+          ? "bg-blue-50 dark:bg-blue-900/20 text-gray-900 dark:text-gray-100 shadow-[inset_2px_0_0_0_#714cb6] dark:shadow-[inset_2px_0_0_0_#cbb7fb]"
           : "hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-900 dark:text-gray-100"
       }`}
     >
       {/* Unread indicator */}
       <div className="w-5 flex-shrink-0 flex items-center justify-center">
         <div className="w-2 flex items-center justify-center">
-          {thread.isUnread && (
-            <div
-              className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : "bg-blue-500"}`}
-            />
-          )}
+          {thread.isUnread && <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />}
         </div>
       </div>
 
@@ -130,11 +126,9 @@ const SearchResultThreadRow = memo(function SearchResultThreadRow({
         {/* Sender name */}
         <span
           className={`w-28 truncate font-medium flex-shrink-0 ${
-            isSelected
-              ? "text-white"
-              : thread.isUnread
-                ? "text-gray-900 dark:text-gray-100"
-                : "text-gray-600 dark:text-gray-400"
+            thread.isUnread
+              ? "text-gray-900 dark:text-gray-100"
+              : "text-gray-600 dark:text-gray-400"
           }`}
         >
           {senderName}
@@ -142,13 +136,7 @@ const SearchResultThreadRow = memo(function SearchResultThreadRow({
 
         {/* Sent badge - show if user replied (latest email is from user) */}
         {thread.userReplied && (
-          <span
-            className={`text-[9px] px-1 py-px rounded flex-shrink-0 uppercase font-medium ${
-              isSelected
-                ? "bg-white/20 text-white"
-                : "bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"
-            }`}
-          >
+          <span className="text-[9px] px-1 py-px rounded flex-shrink-0 uppercase font-medium bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">
             Sent
           </span>
         )}
@@ -157,25 +145,17 @@ const SearchResultThreadRow = memo(function SearchResultThreadRow({
         <div className="flex-1 min-w-0 flex items-center gap-1.5">
           <span
             className={`font-medium truncate ${
-              isSelected
-                ? "text-white"
-                : thread.isUnread
-                  ? "text-gray-900 dark:text-gray-100"
-                  : "text-gray-700 dark:text-gray-300"
+              thread.isUnread
+                ? "text-gray-900 dark:text-gray-100"
+                : "text-gray-700 dark:text-gray-300"
             }`}
           >
             {decodeHtmlEntities(thread.subject)}
           </span>
-          <span
-            className={`flex-shrink-0 ${isSelected ? "text-white/40" : "text-gray-300 dark:text-gray-600"}`}
-          >
-            —
-          </span>
+          <span className="flex-shrink-0 text-gray-300 dark:text-gray-600">—</span>
           {thread.draft ? (
             <>
-              <span
-                className={`flex-shrink-0 ${isSelected ? "text-green-200" : "text-green-600 dark:text-green-400"}`}
-              >
+              <span className="flex-shrink-0 text-green-600 dark:text-green-400">
                 <svg
                   className="w-3 h-3 inline-block mr-0.5 -mt-px"
                   fill="none"
@@ -191,7 +171,7 @@ const SearchResultThreadRow = memo(function SearchResultThreadRow({
                 </svg>
                 Draft
               </span>
-              <span className={`truncate ${isSelected ? "text-white/60" : "text-gray-400"}`}>
+              <span className="truncate text-gray-400">
                 {(thread.draft.body ?? "")
                   .replace(/<[^>]*>/g, "")
                   .replace(/\n/g, " ")
@@ -199,30 +179,18 @@ const SearchResultThreadRow = memo(function SearchResultThreadRow({
               </span>
             </>
           ) : (
-            <span className={`truncate ${isSelected ? "text-white/60" : "text-gray-400"}`}>
-              {snippet}
-            </span>
+            <span className="truncate text-gray-400">{snippet}</span>
           )}
         </div>
 
         {/* Time */}
-        <span
-          className={`w-9 text-[10px] text-right flex-shrink-0 tabular-nums ${
-            isSelected ? "text-white/60" : "text-gray-400"
-          }`}
-        >
+        <span className="w-9 text-[10px] text-right flex-shrink-0 tabular-nums text-gray-400">
           {formatSearchDate(latestEmail.date)}
         </span>
 
         {/* Thread count badge */}
         {thread.hasMultipleEmails && (
-          <span
-            className={`text-[9px] min-w-[1rem] h-4 px-1 rounded-full flex items-center justify-center flex-shrink-0 ${
-              isSelected
-                ? "bg-white/20 text-white"
-                : "bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"
-            }`}
-          >
+          <span className="text-[9px] min-w-[1rem] h-4 px-1 rounded-full flex items-center justify-center flex-shrink-0 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">
             {thread.emails.length}
           </span>
         )}
@@ -1788,7 +1756,7 @@ export default function App() {
       <div className="titlebar-drag h-12 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4">
         <div className="flex items-center space-x-4">
           <div className="w-20" /> {/* Space for traffic lights */}
-          <h1 className="text-lg font-semibold text-gray-800 dark:text-gray-200">Exo</h1>
+          <h1 className="text-lg font-semibold text-gray-800 dark:text-gray-200">Flywheel Email</h1>
           {/* Account Selector */}
           {accounts.length > 0 && (
             <div className="titlebar-no-drag relative">

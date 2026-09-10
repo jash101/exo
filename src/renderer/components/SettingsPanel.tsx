@@ -27,10 +27,11 @@ import {
   resolveBackgroundAgentProviderId,
   applyAgentDrafterSelection,
   isAgentRuntimeAvailable,
+  DEFAULT_DEEPSEEK_MODEL,
+
   type BlockedSender,
 } from "../../shared/types";
 import { useAppStore, type Account, type SettingsTab } from "../store";
-import { reconfigurePostHog, trackEvent } from "../services/posthog";
 import { SplitConfigEditor } from "./SplitConfigEditor";
 import { SnippetsEditor } from "./SnippetsEditor";
 import { MemoriesTab } from "./MemoriesTab";
@@ -105,6 +106,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
   const [modelConfig, setModelConfig] = useState<ModelConfig>(DEFAULT_MODEL_CONFIG);
   const [featureProviders, setFeatureProviders] = useState<Record<string, LlmProvider>>({});
   const [ollamaModels, setOllamaModels] = useState<Record<string, string>>({});
+  const [deepseekModels, setDeepseekModels] = useState<Record<string, string>>({});
   const [isSavingGeneral, setIsSavingGeneral] = useState(false);
   // "saved" for transient success feedback, any other string is an error message
   const [generalSaveResult, setGeneralSaveResult] = useState<string | null>(null);
@@ -140,6 +142,9 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [isSavingApiKey, setIsSavingApiKey] = useState(false);
   const [apiKeySaved, setApiKeySaved] = useState(false);
+  const [deepseekApiKey, setDeepseekApiKey] = useState("");
+  const [isSavingDeepseekKey, setIsSavingDeepseekKey] = useState(false);
+  const [deepseekKeySaved, setDeepseekKeySaved] = useState(false);
   const [claudeCliAvailable, setClaudeCliAvailable] = useState(false);
   const [claudeAuthStatus, setClaudeAuthStatus] = useState<
     "checking" | "authenticated" | "not_authenticated"
@@ -164,6 +169,21 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
   const [posthogEnabled, setPosthogEnabled] = useState(false);
   const [isSavingAnalytics, setIsSavingAnalytics] = useState(false);
   const [analyticsSaveResult, setAnalyticsSaveResult] = useState<string | null>(null);
+
+  // Platform-aware Chrome launch command for the "How to launch Chrome" help text.
+  const getChromeCommand = () => {
+    const port = chromeDebugPort;
+    const profileArg = chromeProfilePath ? ` --user-data-dir="${chromeProfilePath}"` : "";
+    if (navigator.platform.startsWith("Mac")) {
+      return `/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=${port}${profileArg}`;
+    }
+    if (navigator.platform.startsWith("Win")) {
+      return `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=${port}${profileArg}`;
+    }
+    return `google-chrome --remote-debugging-port=${port}${profileArg}`;
+  };
+
+
 
   // Custom MCP servers state
   const [mcpServers, setMcpServers] = useState<Record<string, McpServerConfig>>({});
@@ -294,6 +314,11 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
       if (ollamaFeatureModels) {
         setOllamaModels(ollamaFeatureModels);
       }
+      const deepseekFeatureModels = generalConfig.deepseek?.featureModels;
+      if (deepseekFeatureModels) {
+        setDeepseekModels(deepseekFeatureModels);
+      }
+      setDeepseekApiKey(generalConfig.deepseek?.apiKey ?? "");
       setGithubToken(generalConfig.githubToken ?? "");
       setAllowPrereleaseUpdates(generalConfig.allowPrereleaseUpdates ?? false);
       setAnthropicApiKey(generalConfig.anthropicApiKey ?? "");
@@ -313,6 +338,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
       if (ph) {
         setPosthogEnabled(ph.enabled);
       }
+
     }
     // generalConfigFresh must be a dep: structural sharing can keep the same
     // data reference across the mount refetch, so the freshness flip is the
@@ -469,6 +495,8 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
         // overwrite the freshly-saved key. By omitting apiKey/defaultModel, the
         // deep-merge falls through to the existing values for those fields.
         ollamaCloud: { featureModels: ollamaModels },
+        // Same pattern for DeepSeek — apiKey is owned by the Agents tab.
+        deepseek: { featureModels: deepseekModels },
         githubToken: githubToken || undefined,
         allowPrereleaseUpdates,
       })) as { success: boolean; error?: string } | undefined;
@@ -694,6 +722,19 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
     }
   };
 
+  const handleSaveDeepseekKey = async () => {
+    setIsSavingDeepseekKey(true);
+    setDeepseekKeySaved(false);
+    try {
+      await window.api.settings.set({ deepseek: { apiKey: deepseekApiKey } });
+      queryClient.invalidateQueries({ queryKey: ["general-config"] });
+      setDeepseekKeySaved(true);
+      setTimeout(() => setDeepseekKeySaved(false), 3000);
+    } finally {
+      setIsSavingDeepseekKey(false);
+    }
+  };
+
   const handleClaudeLogin = async () => {
     setIsLoggingIn(true);
     setLoginError(null);
@@ -754,7 +795,6 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
           isConnected: result.data.isConnected,
         };
         setAccounts([...accounts, newAccount]);
-        trackEvent("account_added", { account_count: accounts.length + 1 });
       } else if (!result.cancelled) {
         setAccountError(result.error || "Failed to add account");
       }
@@ -774,7 +814,6 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
       const result = await window.api.accounts.remove(accountId);
       if (result.success) {
         removeAccountFromStore(accountId);
-        trackEvent("account_removed", { account_count: accounts.length - 1 });
       } else {
         setAccountError(result.error || "Failed to remove account");
       }
@@ -1012,7 +1051,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                 General Settings
               </h2>
               <p className="text-gray-600 dark:text-gray-400 mb-4">
-                Configure how Exo generates draft replies.
+                Configure how Flywheel Email generates draft replies.
               </p>
 
               {/* Appearance / Theme Toggle */}
@@ -1202,7 +1241,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                       Default Mail App
                     </h3>
                     <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                      Register Exo as the default handler for mailto: links. Clicking email links in
+                      Register Flywheel Email as the default handler for mailto: links. Clicking email links in
                       other apps will open a compose window here.
                     </p>
                   </div>
@@ -1341,8 +1380,10 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                 <div className="mb-3">
                   <h3 className="font-semibold text-gray-900 dark:text-gray-100">AI Models</h3>
                   <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                    Choose which provider and model runs each feature. For Anthropic, Haiku is
-                    fastest and cheapest, Opus is most capable.
+                    Choose which provider and model to use for each feature. For Anthropic, Haiku
+                    is fastest and cheapest, Opus is most capable. DeepSeek defaults to{" "}
+                    {DEFAULT_DEEPSEEK_MODEL}.
+
                   </p>
                 </div>
                 <div className="space-y-3">
@@ -1449,6 +1490,15 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                               {(key !== "senderLookup" || senderLookupProvider === "exa") && (
                                 <option value="ollama-cloud">Ollama Cloud</option>
                               )}
+                              {/* DeepSeek routes through createMessage() only — the agent
+                                  worker subprocess speaks Anthropic/Ollama env-var wiring,
+                                  so hide DeepSeek for agent features to avoid saving a
+                                  route that can't be honored at spawn time. */}
+                              {(key !== "senderLookup" || senderLookupProvider === "exa") &&
+                                key !== "agentChat" &&
+                                key !== "agentDrafter" && (
+                                  <option value="deepseek">DeepSeek</option>
+                                )}
                               {isBackgroundAgentRow && (
                                 <>
                                   <option value="opencode" disabled={!opencodeRuntimeAvailable}>
@@ -1500,6 +1550,17 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                                   </option>
                                 ))}
                               </select>
+                            ) : provider === "deepseek" ? (
+                              <input
+                                type="text"
+                                value={deepseekModels[key] ?? DEFAULT_DEEPSEEK_MODEL}
+                                onChange={(e) =>
+                                  setDeepseekModels((prev) => ({ ...prev, [key]: e.target.value }))
+                                }
+                                placeholder={DEFAULT_DEEPSEEK_MODEL}
+                                aria-label={`DeepSeek model for ${label}`}
+                                className="w-48 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-500 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                              />
                             ) : (
                               <OllamaModelSelect
                                 value={ollamaModels[key] ?? DEFAULT_OLLAMA_MODEL}
@@ -1510,6 +1571,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                               />
                             )}
                           </div>
+
                         </div>
                         {isBackgroundAgentRow &&
                           effectiveBackgroundProvider !== backgroundAgentProvider && (
@@ -1947,7 +2009,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
               </button>
 
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                Adding an account will open a Google sign-in window. You'll need to authorize Exo to
+                Adding an account will open a Google sign-in window. You'll need to authorize Flywheel Email to
                 access your emails.
               </p>
             </div>
@@ -2061,7 +2123,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                 when composing new emails.
               </p>
 
-              {/* Exo branding toggle */}
+              {/* Flywheel Email branding toggle */}
               <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-4 mb-6">
                 <label className="flex items-center space-x-3 cursor-pointer">
                   <input
@@ -2072,14 +2134,10 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                   />
                   <div>
                     <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      Show &quot;Sent by Exo&quot; branding
+                      Show &quot;Sent by Flywheel Email&quot; branding
                     </span>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                      Appends a small &quot;Sent by{" "}
-                      <a href="https://exo.email" className="text-blue-500 hover:underline">
-                        Exo
-                      </a>
-                      &quot; line after your signature.
+                      Appends a small &quot;Sent by Flywheel Email&quot; line after your signature.
                     </p>
                   </div>
                 </label>
@@ -2542,7 +2600,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                 Executive Assistant Integration
               </h2>
               <p className="text-gray-600 dark:text-gray-400 mb-4">
-                When enabled, Exo will automatically CC your executive assistant on emails that
+                When enabled, Flywheel Email will automatically CC your executive assistant on emails that
                 involve scheduling or calendar coordination. This lets your assistant handle
                 scheduling while you focus on the content of your response.
               </p>
@@ -2552,7 +2610,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                   How it works:
                 </h3>
                 <ol className="text-sm text-blue-800 dark:text-blue-300 space-y-1 list-decimal list-inside">
-                  <li>When you generate a draft, Exo detects scheduling language</li>
+                  <li>When you generate a draft, Flywheel Email detects scheduling language</li>
                   <li>If scheduling is detected, your EA is automatically added to the CC</li>
                   <li>The draft includes a note deferring scheduling to your EA</li>
                   <li>Your EA can then coordinate directly with the sender</li>
@@ -2920,6 +2978,38 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                 </div>
               </div>
 
+              {/* DeepSeek API Key */}
+              <div className="mb-6">
+                <h5 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  DeepSeek API Key
+                </h5>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                  Optional. Lets you route features to DeepSeek models (e.g.{" "}
+                  {DEFAULT_DEEPSEEK_MODEL}) in Settings → General → AI Models. Get a key at
+                  platform.deepseek.com.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={deepseekApiKey}
+                    onChange={(e) => setDeepseekApiKey(e.target.value)}
+                    placeholder="sk-..."
+                    className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-400"
+                  />
+                  <button
+                    onClick={handleSaveDeepseekKey}
+                    disabled={isSavingDeepseekKey}
+                    className={`px-4 py-2 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors ${
+                      deepseekKeySaved
+                        ? "bg-green-600 dark:bg-green-500"
+                        : "bg-blue-600 dark:bg-blue-500 hover:bg-blue-700 dark:hover:bg-blue-600"
+                    }`}
+                  >
+                    {isSavingDeepseekKey ? "Saving..." : deepseekKeySaved ? "Saved" : "Save"}
+                  </button>
+                </div>
+              </div>
+
               {/* Claude Account (OAuth) — only shown when claude CLI is available */}
               {claudeCliAvailable && (
                 <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
@@ -3077,9 +3167,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                       <strong>How to launch Chrome with debugging:</strong>
                     </p>
                     <code className="block mt-2 text-xs bg-amber-100 dark:bg-amber-900/30 p-2 rounded text-amber-900 dark:text-amber-300 font-mono">
-                      /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome
-                      --remote-debugging-port={chromeDebugPort}
-                      {chromeProfilePath ? ` --user-data-dir="${chromeProfilePath}"` : ""}
+                      {getChromeCommand()}
                     </code>
                   </div>
                 </div>
@@ -3601,113 +3689,9 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                 Analytics
               </h3>
               <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-                Help improve Exo by sharing usage data and error reports. No email content is ever
+                Help improve Flywheel Email by sharing usage data and error reports. No email content is ever
                 sent.
               </p>
-            </div>
-
-            {/* Enable/Disable Toggle */}
-            <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h4 className="text-base font-medium text-gray-900 dark:text-gray-100">
-                    Enable Analytics
-                  </h4>
-                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                    Crash reports, app usage data, and session recordings for debugging
-                  </p>
-                </div>
-                <button
-                  onClick={() => setPosthogEnabled(!posthogEnabled)}
-                  className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
-                    posthogEnabled ? "bg-blue-600 dark:bg-blue-500" : "bg-gray-200 dark:bg-gray-700"
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
-                      posthogEnabled ? "translate-x-6" : "translate-x-1"
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
-
-            {/* Save button */}
-            <div className="flex items-center gap-3">
-              <button
-                onClick={async () => {
-                  setIsSavingAnalytics(true);
-                  setAnalyticsSaveResult(null);
-                  try {
-                    // Session replay is bundled with analytics — both on or both off
-                    const posthogConfig = {
-                      enabled: posthogEnabled,
-                      sessionReplay: posthogEnabled,
-                    };
-                    console.log("[Settings] Saving analytics config:", posthogConfig);
-                    const result = await window.api.settings.set({ posthog: posthogConfig });
-                    if (result.success) {
-                      // Reconfigure PostHog in the renderer with new settings
-                      const apiKey = import.meta.env.VITE_POSTHOG_API_KEY;
-                      const host = import.meta.env.VITE_POSTHOG_HOST || "https://us.i.posthog.com";
-                      reconfigurePostHog({
-                        ...posthogConfig,
-                        apiKey,
-                        host,
-                      });
-                      console.log("[Settings] Analytics config saved and reconfigured");
-                      setAnalyticsSaveResult("saved");
-                      setTimeout(() => setAnalyticsSaveResult(null), 3000);
-                    } else {
-                      console.error("[Settings] Failed to save analytics config:", result.error);
-                      setAnalyticsSaveResult("error");
-                    }
-                  } catch (err) {
-                    console.error("[Settings] Error saving analytics config:", err);
-                    setAnalyticsSaveResult("error");
-                  } finally {
-                    setIsSavingAnalytics(false);
-                  }
-                }}
-                disabled={isSavingAnalytics}
-                className={`px-4 py-2 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors ${
-                  analyticsSaveResult === "saved"
-                    ? "bg-green-600 dark:bg-green-500"
-                    : "bg-blue-600 dark:bg-blue-500 hover:bg-blue-700 dark:hover:bg-blue-600"
-                }`}
-              >
-                {isSavingAnalytics
-                  ? "Saving..."
-                  : analyticsSaveResult === "saved"
-                    ? "Saved!"
-                    : "Save Analytics Settings"}
-              </button>
-              {analyticsSaveResult === "error" && (
-                <span className="text-sm text-red-600 dark:text-red-400">Failed to save</span>
-              )}
-            </div>
-
-            {/* Info box about what's tracked */}
-            <div className="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-lg text-sm text-gray-700 dark:text-gray-300">
-              <p className="font-medium mb-2">What we collect:</p>
-              <ul className="list-disc list-inside space-y-1">
-                <li>
-                  <strong>Minimal by default:</strong> Only app launch and user identification are
-                  sent during normal use
-                </li>
-                <li>
-                  <strong>Error reports:</strong> When a crash occurs, recent activity context is
-                  sent to help us debug
-                </li>
-                <li>
-                  <strong>Session replay:</strong> UI recording for visual debugging — all visible
-                  text content is masked
-                </li>
-                <li>
-                  <strong>No autocapture:</strong> Individual clicks and form interactions are NOT
-                  tracked
-                </li>
-              </ul>
             </div>
 
             {/* AI Usage & Costs */}
@@ -3727,7 +3711,14 @@ interface UsageStats {
   thisMonth: { totalCostCents: number; totalCalls: number };
   byModel: Array<{ model: string; costCents: number; calls: number }>;
   byCaller: Array<{ caller: string; costCents: number; calls: number }>;
+  byProvider: Array<{ provider: string; costCents: number; calls: number }>;
 }
+
+const PROVIDER_LABELS: Record<string, string> = {
+  anthropic: "Anthropic (Claude)",
+  "ollama-cloud": "Ollama Cloud",
+  deepseek: "DeepSeek",
+};
 
 interface LlmCallRecord {
   id: string;
@@ -3772,7 +3763,7 @@ function UsageCostSection() {
           AI Usage & Costs
         </h3>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-          Token usage and estimated costs for Claude API calls (last 30 days).
+          Token usage and estimated costs across all AI providers (last 30 days).
         </p>
       </div>
 
@@ -3800,6 +3791,39 @@ function UsageCostSection() {
             </p>
           </div>
         ))}
+      </div>
+
+      {/* Breakdown by Provider */}
+      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-4">
+        <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">By Provider</h4>
+        {stats?.byProvider && stats.byProvider.length > 0 ? (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
+                <th className="pb-2 font-medium">Provider</th>
+                <th className="pb-2 font-medium text-right">Cost</th>
+                <th className="pb-2 font-medium text-right">Calls</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.byProvider.map((row) => (
+                <tr key={row.provider} className="border-b border-gray-50 dark:border-gray-700/50">
+                  <td className="py-1.5 text-gray-900 dark:text-gray-100">
+                    {PROVIDER_LABELS[row.provider] ?? row.provider}
+                  </td>
+                  <td className="py-1.5 text-right text-gray-700 dark:text-gray-300">
+                    {formatCost(row.costCents)}
+                  </td>
+                  <td className="py-1.5 text-right text-gray-700 dark:text-gray-300">
+                    {row.calls}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="text-sm text-gray-400 dark:text-gray-500">No usage data yet.</p>
+        )}
       </div>
 
       {/* Breakdown by Caller */}

@@ -17,6 +17,7 @@ import type {
   Message,
 } from "@anthropic-ai/sdk/resources/messages";
 import type { LlmProvider } from "../../shared/types";
+import { DEEPSEEK_CHAT_COMPLETIONS_URL, DEFAULT_DEEPSEEK_MODEL } from "../../shared/types";
 import { createLogger } from "./logger";
 import { randomUUID } from "crypto";
 
@@ -37,6 +38,13 @@ const PRICING: Record<
   // Older model IDs that may still be in use
   "claude-3-5-sonnet-20241022": { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-3-5-haiku-20241022": { input: 0.8, output: 4.0, cacheRead: 0.08, cacheWrite: 1.0 },
+  // DeepSeek (approximate list pricing; cache hits billed at the cacheRead rate,
+  // and DeepSeek has no separate cache-write charge so cacheWrite == input)
+  [DEFAULT_DEEPSEEK_MODEL]: { input: 0.6, output: 1.7, cacheRead: 0.06, cacheWrite: 0.6 },
+  "deepseek-v4-flash": { input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0.28 },
+  // Legacy aliases (retired 2026-07-24) route to v4-flash
+  "deepseek-chat": { input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0.28 },
+  "deepseek-reasoner": { input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0.28 },
 };
 
 // Default pricing for unknown models (use Sonnet pricing as a reasonable middle)
@@ -77,6 +85,7 @@ export interface UsageStats {
   thisMonth: { totalCostCents: number; totalCalls: number };
   byModel: Array<{ model: string; costCents: number; calls: number }>;
   byCaller: Array<{ caller: string; costCents: number; calls: number }>;
+  byProvider: Array<{ provider: string; costCents: number; calls: number }>;
 }
 
 export interface CreateOptions {
@@ -178,6 +187,31 @@ function getOllamaClient(): Anthropic {
     apiKey: null,
   });
   return _ollamaClient;
+}
+
+// --- DeepSeek client (api.deepseek.com, OpenAI-compatible endpoint) ---
+//
+// DeepSeek is spoken over its OpenAI-compatible /chat/completions surface via
+// callDeepSeekNative() (see below), not the Anthropic SDK. `_deepseekClient`
+// exists only as a test seam: when a mock exposing messages.create() is
+// injected, createMessage() routes through it instead of hitting the network.
+let _deepseekClient: Anthropic | null = null;
+let _deepseekApiKey: string | null = null;
+
+/**
+ * Configure the DeepSeek client. Call when the API key changes.
+ */
+export function setDeepSeekConfig(apiKey: string): void {
+  _deepseekApiKey = apiKey || null;
+  _deepseekClient = null; // Force re-creation on next use
+}
+
+/**
+ * Replace the DeepSeek client for testing. Pass null to reset.
+ * The mock must expose a `messages.create()` method matching the SDK.
+ */
+export function _setDeepSeekClientForTesting(client: unknown): void {
+  _deepseekClient = client as Anthropic;
 }
 
 /** Get the appropriate client for a provider. */
@@ -602,6 +636,158 @@ async function callOllamaNative(
   return synthesizeAnthropicMessage(ollamaResponse, params.model);
 }
 
+// --- Native DeepSeek path (callDeepSeekNative) ---
+//
+// DeepSeek's primary, best-supported surface is its OpenAI-compatible
+// /chat/completions endpoint (base URL https://api.deepseek.com, authenticated
+// with a Bearer API key). We hit it directly rather than going through the
+// Anthropic SDK — the Anthropic-compat shim at /anthropic proved unreliable for
+// our callers. Reasoning models (deepseek-v4-pro) return their chain-of-thought
+// in a dedicated `reasoning_content` field, so it never pollutes the visible
+// `content` the way Ollama's does; no special `think` gymnastics are required.
+//
+// Synthesizes an Anthropic-style Message so downstream callers (which read
+// `.content[0].text`) don't need to change.
+
+interface OpenAIChatResponse {
+  model?: string;
+  choices?: Array<{
+    message?: { role?: string; content?: string | null; reasoning_content?: string | null };
+    finish_reason?: string;
+  }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    // DeepSeek reports automatic context-cache accounting via these fields.
+    prompt_cache_hit_tokens?: number;
+    prompt_cache_miss_tokens?: number;
+  };
+}
+
+/**
+ * Synthesize an Anthropic-style Message from an OpenAI-compatible
+ * /chat/completions response.
+ *
+ * Token accounting maps DeepSeek's usage onto the Anthropic shape our cost
+ * tracker expects: cache-hit tokens are billed at the cache-read rate, and the
+ * remaining (miss) prompt tokens at the full input rate. DeepSeek has no
+ * explicit cache-write charge, so cache_creation_input_tokens is always 0.
+ */
+function synthesizeAnthropicMessageFromOpenAI(
+  response: OpenAIChatResponse,
+  requestedModel: string,
+): Message {
+  const choice = response.choices?.[0];
+  const text = choice?.message?.content ?? "";
+  const thinking = choice?.message?.reasoning_content ?? "";
+
+  const promptTokens = response.usage?.prompt_tokens ?? 0;
+  const cacheReadTokens = response.usage?.prompt_cache_hit_tokens ?? 0;
+  // Prefer the explicit miss count; fall back to (prompt - hit) so we never
+  // double-count cache hits at the full input rate.
+  const inputTokens =
+    response.usage?.prompt_cache_miss_tokens ?? Math.max(0, promptTokens - cacheReadTokens);
+  const outputTokens = response.usage?.completion_tokens ?? 0;
+
+  // Text block goes FIRST (unlike the Ollama synthesis) so callers that read
+  // response.content[0] directly — rather than searching for the text block —
+  // still get the answer even when a reasoning trace is present.
+  const content: Message["content"] = [
+    { type: "text", text, citations: null } as unknown as Message["content"][number],
+  ];
+  if (thinking) {
+    content.push({
+      type: "thinking",
+      thinking,
+      signature: "",
+    } as unknown as Message["content"][number]);
+  }
+
+  return {
+    id: `deepseek-native-${randomUUID()}`,
+    type: "message",
+    role: "assistant",
+    model: response.model ?? requestedModel,
+    content,
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: cacheReadTokens,
+      server_tool_use: null,
+      service_tier: null,
+    } as Message["usage"],
+  } as Message;
+}
+
+async function callDeepSeekNative(
+  params: MessageCreateParamsNonStreaming,
+  think: CreateOptions["think"],
+  signal: AbortSignal | undefined,
+): Promise<Message> {
+  if (!_deepseekApiKey) {
+    throw new Error("DeepSeek API key not configured. Add your key in Settings → AI Models.");
+  }
+
+  // Tools aren't translated for the native path. No DeepSeek-routed caller
+  // passes tools today (senderLookup uses Anthropic's web_search and is pinned
+  // to anthropic). Fail loudly so a future caller adding tools sees it.
+  if (params.tools && params.tools.length > 0) {
+    throw new Error(
+      "callDeepSeekNative: tools not supported on the /chat/completions path. Route tool-using callers to Anthropic or extend the translation layer.",
+    );
+  }
+
+  const systemText = flattenSystemPrompt(params.system);
+  const messages: Array<{ role: string; content: string }> = [];
+  if (systemText) messages.push({ role: "system", content: systemText });
+  for (const msg of params.messages) {
+    messages.push({ role: msg.role, content: flattenMessageContent(msg.content) });
+  }
+
+  const body: Record<string, unknown> = {
+    model: params.model,
+    stream: false,
+    messages,
+    max_tokens: typeof params.max_tokens === "number" ? params.max_tokens : OLLAMA_MIN_MAX_TOKENS,
+    ...(typeof params.temperature === "number" ? { temperature: params.temperature } : {}),
+  };
+  // Map our `think` option onto DeepSeek's reasoning controls. `false` turns
+  // thinking off (fastest for non-reasoning use); a named effort level passes
+  // through as reasoning_effort. `true`/undefined leaves the model default.
+  if (think === false) {
+    body.thinking = { type: "disabled" };
+  } else if (typeof think === "string") {
+    body.reasoning_effort = think;
+  }
+
+  const res = await fetch(DEEPSEEK_CHAT_COMPLETIONS_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${_deepseekApiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    // Map HTTP errors to Anthropic SDK error shapes so getRetryCategory()
+    // (which uses instanceof Anthropic.*) classifies them for retry. Passing a
+    // real Headers object (not undefined) makes generate() return the
+    // status-typed error — e.g. BadRequestError for 400 (non-retryable) and
+    // RateLimitError for 429 (retryable) — instead of collapsing everything
+    // into a retryable APIConnectionError.
+    throw Anthropic.APIError.generate(res.status, undefined, errText, new Headers());
+  }
+
+  const response = (await res.json()) as OpenAIChatResponse;
+  return synthesizeAnthropicMessageFromOpenAI(response, params.model);
+}
+
 /**
  * Create a message using the configured LLM provider with retry and cost tracking.
  */
@@ -611,16 +797,22 @@ export async function createMessage(
 ): Promise<Message> {
   const { caller, emailId, accountId, timeoutMs, provider, think } = options;
   const isOllama = provider === "ollama-cloud";
+  const isDeepSeek = provider === "deepseek";
   const model = params.model;
   const startTime = Date.now();
 
-  // Strip cache_control for Ollama (unsupported)
-  const effectiveParams = isOllama ? adjustParamsForOllama(params) : params;
+  // Strip cache_control for non-Anthropic providers (Ollama rejects it;
+  // DeepSeek ignores Anthropic-style cache markers and uses automatic
+  // context caching). Also raises the max_tokens floor — deepseek-v4-pro
+  // is a reasoning model whose thinking output would otherwise exhaust the
+  // small budgets our features set for Anthropic.
+  const effectiveParams = isOllama || isDeepSeek ? adjustParamsForOllama(params) : params;
 
-  // For Ollama we use the SDK's retry-category logic but call our native path
-  // instead of client.messages.create(). For Anthropic we use the SDK.
-  // _testOllamaClient overrides the native path in unit tests.
-  const client = isOllama ? null : getClientForProvider(provider);
+  // Ollama and DeepSeek use the SDK's retry-category logic but call our native
+  // paths instead of client.messages.create(). For Anthropic we use the SDK.
+  // Injected test clients (_setOllamaClientForTesting / _setDeepSeekClientForTesting)
+  // override the native path in unit tests.
+  const client = isOllama || isDeepSeek ? null : getClientForProvider(provider);
   let lastError: unknown = null;
   let totalAttempts = 0;
 
@@ -650,6 +842,16 @@ export async function createMessage(
           });
         } else {
           response = await callOllamaNative(effectiveParams, think, abortController?.signal);
+        }
+      } else if (isDeepSeek) {
+        // Native OpenAI-compatible /chat/completions path. An injected test
+        // client (_setDeepSeekClientForTesting) intercepts via messages.create.
+        if (_deepseekClient) {
+          response = await _deepseekClient.messages.create(effectiveParams, {
+            signal: abortController?.signal,
+          });
+        } else {
+          response = await callDeepSeekNative(effectiveParams, think, abortController?.signal);
         }
       } else {
         response = await client!.messages.create(effectiveParams, {
@@ -754,6 +956,7 @@ export function getUsageStats(): UsageStats {
       thisMonth: { totalCostCents: 0, totalCalls: 0 },
       byModel: [],
       byCaller: [],
+      byProvider: [],
     };
   }
 
@@ -787,12 +990,21 @@ export function getUsageStats(): UsageStats {
     )
     .all() as Array<{ caller: string; costCents: number; calls: number }>;
 
+  // COALESCE the provider column: rows written before the column existed (and
+  // any NULLs) are attributed to Anthropic, the original default.
+  const byProvider = _db
+    .prepare(
+      "SELECT COALESCE(provider, 'anthropic') as provider, COALESCE(SUM(cost_cents), 0) as costCents, COUNT(*) as calls FROM llm_calls WHERE created_at >= datetime('now', '-30 days') GROUP BY COALESCE(provider, 'anthropic') ORDER BY calls DESC",
+    )
+    .all() as Array<{ provider: string; costCents: number; calls: number }>;
+
   return {
     today: { totalCostCents: today.cost, totalCalls: today.calls },
     thisWeek: { totalCostCents: thisWeek.cost, totalCalls: thisWeek.calls },
     thisMonth: { totalCostCents: thisMonth.cost, totalCalls: thisMonth.calls },
     byModel,
     byCaller,
+    byProvider,
   };
 }
 

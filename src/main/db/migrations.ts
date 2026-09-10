@@ -365,7 +365,7 @@ export const NUMBERED_MIGRATIONS: Migration[] = [
   },
   {
     version: 8,
-    name: "strip_large_data_uris_and_widen_merge_cover_index",
+name: "strip_large_data_uris_and_widen_merge_cover_index",
     vacuumAfter: true,
     // Prod forensics (July 2026): the emails table was 1.6GB for ~15k rows
     // because inline images were stored as base64 data: URIs inside body HTML
@@ -454,7 +454,23 @@ export const NUMBERED_MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 10,
+    name: "add_scheduled_messages_attachments_column",
+    up: (db) => {
+      // Scheduled sends silently dropped attachments because they were never
+      // persisted (outbox already had this column). ALTER only for existing
+      // DBs — fresh DBs get the column from SCHEMA.
+      const cols = db.prepare("PRAGMA table_info(scheduled_messages)").all() as Array<{
+        name: string;
+      }>;
+      if (cols.length > 0 && !cols.some((c) => c.name === "attachments")) {
+        db.exec("ALTER TABLE scheduled_messages ADD COLUMN attachments TEXT");
+      }
+    },
+  },
 ];
+
 
 function runNumberedMigrations(db: DatabaseInstance): void {
   db.exec(`

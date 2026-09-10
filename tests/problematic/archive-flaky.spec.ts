@@ -27,7 +27,7 @@ async function launchElectronApp(): Promise<{ app: ElectronApplication; page: Pa
 
   const window = await app.firstWindow();
   await window.waitForLoadState("domcontentloaded");
-  await window.waitForSelector("text=Exo", { timeout: 15000 });
+  await window.waitForSelector("text=Flywheel Email", { timeout: 15000 });
 
   return { app, page: window };
 }
@@ -40,7 +40,7 @@ async function countInboxThreads(page: Page): Promise<number> {
 
 /** Get the text content of the currently selected email row. */
 async function getSelectedRowText(page: Page): Promise<string | null> {
-  const selected = page.locator(".overflow-y-auto button.bg-blue-600").first();
+  const selected = page.locator(".overflow-y-auto div[data-thread-id][data-selected='true']").first();
   if (await selected.isVisible().catch(() => false)) {
     return selected.textContent();
   }
@@ -51,7 +51,7 @@ async function getSelectedRowText(page: Page): Promise<string | null> {
 async function selectFirstThread(page: Page): Promise<void> {
   await page.keyboard.press("j");
   await page.waitForTimeout(300);
-  const selected = page.locator(".overflow-y-auto button.bg-blue-600");
+  const selected = page.locator(".overflow-y-auto div[data-thread-id][data-selected='true']");
   await expect(selected).toBeVisible({ timeout: 3000 });
 }
 
@@ -140,7 +140,7 @@ test.describe("Archive - Rapid Succession", () => {
     expect(countBefore).toBeGreaterThan(3);
 
     for (let i = 0; i < 3; i++) {
-      await expect(page.locator(".overflow-y-auto button.bg-blue-600")).toBeVisible({
+      await expect(page.locator(".overflow-y-auto div[data-thread-id][data-selected='true']")).toBeVisible({
         timeout: 3000,
       });
       await page.waitForTimeout(200);
@@ -186,7 +186,7 @@ test.describe("Trash - Rapid Succession", () => {
   test("can trash multiple threads in rapid succession", async () => {
     await page.waitForTimeout(1000);
     const isSelected = await page
-      .locator(".overflow-y-auto button.bg-blue-600")
+      .locator(".overflow-y-auto div[data-thread-id][data-selected='true']")
       .isVisible()
       .catch(() => false);
     if (!isSelected) {
@@ -204,7 +204,7 @@ test.describe("Trash - Rapid Succession", () => {
     }).toPass({ timeout: 3000 });
 
     // Ensure selection is still visible before second trash
-    await expect(page.locator(".overflow-y-auto button.bg-blue-600")).toBeVisible({
+    await expect(page.locator(".overflow-y-auto div[data-thread-id][data-selected='true']")).toBeVisible({
       timeout: 2000,
     });
     await page.waitForTimeout(200);
@@ -256,7 +256,7 @@ test.describe("Archive - Navigate Then Archive", () => {
     await page.waitForTimeout(300);
 
     // Verify selection is active before measuring count
-    await expect(page.locator(".overflow-y-auto button.bg-blue-600")).toBeVisible({
+    await expect(page.locator(".overflow-y-auto div[data-thread-id][data-selected='true']")).toBeVisible({
       timeout: 2000,
     });
 
@@ -265,7 +265,10 @@ test.describe("Archive - Navigate Then Archive", () => {
     expect(selectedBefore).toBeTruthy();
 
     // Ensure focus is on page (not in an input field) before archive
-    await page.locator(".overflow-y-auto button.bg-blue-600").focus();
+    await page
+      .locator(".overflow-y-auto div[data-thread-id][data-selected='true'] button")
+      .first()
+      .focus();
     await page.waitForTimeout(100);
 
     // Archive the current thread

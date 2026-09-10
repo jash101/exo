@@ -73,7 +73,7 @@ test.describe("Error States - App Load", () => {
 
   test("app title is visible", async () => {
     // The Exo title should be in the titlebar
-    await expect(page.locator("text=Exo").first()).toBeVisible({ timeout: 5000 });
+    await expect(page.locator("text=Flywheel Email").first()).toBeVisible({ timeout: 5000 });
   });
 });
 
@@ -339,11 +339,11 @@ test.describe("Error States - UI Resilience", () => {
       await page.waitForTimeout(500);
 
       // App should handle double-click gracefully. Verify against the titlebar
-      // "Exo" header rather than the sidebar Inbox button: clicking a thread
+      // "Flywheel Email" header rather than the sidebar Inbox button: clicking a thread
       // switches to full-view mode which hides the sidebar, so a previous
       // assertion against `text=Inbox` would flake. The titlebar is always
       // visible whatever the view mode.
-      await expect(page.locator("h1").filter({ hasText: "Exo" })).toBeVisible({ timeout: 5000 });
+      await expect(page.locator("h1").filter({ hasText: "Flywheel Email" })).toBeVisible({ timeout: 5000 });
     }
   });
 
@@ -363,7 +363,7 @@ test.describe("Error States - UI Resilience", () => {
       // App should still be alive after refresh. Verify against the always-
       // visible titlebar rather than the sidebar Inbox button, which is
       // hidden when the previous keyboard actions land the app in full view.
-      await expect(page.locator("h1").filter({ hasText: "Exo" })).toBeVisible({ timeout: 5000 });
+      await expect(page.locator("h1").filter({ hasText: "Flywheel Email" })).toBeVisible({ timeout: 5000 });
     }
   });
 });

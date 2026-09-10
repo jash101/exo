@@ -129,7 +129,7 @@ test.describe("Packaged app smoke", () => {
   });
 
   test("app launches within 30s and shows the Exo brand", async () => {
-    await expect(page.locator("text=Exo").first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("text=Flywheel Email").first()).toBeVisible({ timeout: 30_000 });
   });
 
   test("bundles an executable compatible OpenCode platform binary", () => {

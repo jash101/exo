@@ -37,7 +37,10 @@ const OLD_CONFIG_DIR = join(homedir(), ".config", "exo");
 
 /**
  * One-time migration: copy token/credential files from the old ~/.config/exo/
- * location to app.getPath("userData"). Only needed on macOS where those paths differ.
+ * location to the app's userData directory. Only relevant on platforms where
+ * those paths differ — macOS (where the app moved to ~/Library/Application Support/exo)
+ * and Windows (where the app uses %APPDATA%/exo). On Linux, the old and new
+ * paths are the same (XDG ~/.config/exo), so this is a no-op.
  * Safe to call multiple times — skips files that already exist at the destination.
  */
 export async function migrateOldConfigIfNeeded(): Promise<void> {
@@ -353,7 +356,7 @@ export class GmailClient {
             <html>
               <body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
                 <div style="text-align: center;">
-                  <h1>✓ Exo Connected</h1>
+                  <h1>✓ Flywheel Email Connected</h1>
                   <p>You can close this tab and return to the application.</p>
                 </div>
               </body>

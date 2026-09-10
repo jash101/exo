@@ -15,6 +15,7 @@ import {
   createMessage,
   _setClientForTesting,
   setAnthropicServiceDb,
+  setDeepSeekConfig,
   getUsageStats,
   getCallHistory,
   type LlmCallRecord,
@@ -339,5 +340,170 @@ test.describe("AnthropicService", () => {
   test("getCallHistory returns empty array when no calls recorded", () => {
     const history = getCallHistory();
     expect(history).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DeepSeek OpenAI-compatible native path
+//
+// DeepSeek is spoken over its OpenAI-compatible /chat/completions endpoint via
+// a raw fetch (not the Anthropic SDK). These tests stub global.fetch to assert
+// the request shape (URL, Bearer auth, OpenAI body) and that the OpenAI-shaped
+// response is synthesized back into an Anthropic Message with correct token
+// accounting and provider attribution.
+// ---------------------------------------------------------------------------
+
+interface FetchCall {
+  url: string;
+  init: RequestInit;
+}
+
+function makeOpenAIResponse(overrides?: {
+  content?: string;
+  reasoning?: string;
+  usage?: Record<string, number>;
+}) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      model: "deepseek-v4-pro",
+      choices: [
+        {
+          message: {
+            content: overrides?.content ?? "DeepSeek says hi",
+            reasoning_content: overrides?.reasoning,
+          },
+          finish_reason: "stop",
+        },
+      ],
+      usage: overrides?.usage ?? {
+        prompt_tokens: 100,
+        completion_tokens: 50,
+        prompt_cache_hit_tokens: 20,
+        prompt_cache_miss_tokens: 80,
+      },
+    }),
+    text: async () => "",
+  } as unknown as Response;
+}
+
+test.describe("DeepSeek native path", () => {
+  test.skip(!!nativeModuleError, `Skipping: ${nativeModuleError}`);
+
+  let testDb: DB;
+  let originalFetch: typeof globalThis.fetch;
+  let fetchCalls: FetchCall[];
+
+  test.beforeEach(() => {
+    testDb = new DatabaseCtor!(":memory:");
+    setAnthropicServiceDb(testDb);
+    setDeepSeekConfig("test-deepseek-key");
+    fetchCalls = [];
+    originalFetch = globalThis.fetch;
+  });
+
+  test.afterEach(() => {
+    globalThis.fetch = originalFetch;
+    setDeepSeekConfig("");
+    testDb?.close();
+  });
+
+  test("hits the OpenAI-compatible endpoint with Bearer auth and OpenAI body", async () => {
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      fetchCalls.push({ url, init });
+      return makeOpenAIResponse();
+    }) as unknown as typeof globalThis.fetch;
+
+    const result = await createMessage(
+      {
+        model: "deepseek-v4-pro",
+        max_tokens: 256,
+        system: "You are helpful",
+        messages: [{ role: "user", content: "Hello" }],
+      },
+      { caller: "analyzer", provider: "deepseek" },
+    );
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].url).toBe("https://api.deepseek.com/chat/completions");
+    const headers = fetchCalls[0].init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer test-deepseek-key");
+    const body = JSON.parse(fetchCalls[0].init.body as string);
+    expect(body.model).toBe("deepseek-v4-pro");
+    expect(body.stream).toBe(false);
+    // System prompt is flattened into a leading system message
+    expect(body.messages[0]).toEqual({ role: "system", content: "You are helpful" });
+    expect(body.messages[1]).toEqual({ role: "user", content: "Hello" });
+
+    // Response synthesized into an Anthropic-style message
+    expect(result.content[0]).toEqual({ type: "text", text: "DeepSeek says hi", citations: null });
+  });
+
+  test("maps OpenAI usage onto Anthropic token fields (cache hit vs miss)", async () => {
+    globalThis.fetch = (async () => makeOpenAIResponse()) as unknown as typeof globalThis.fetch;
+
+    await createMessage({ model: "deepseek-v4-pro", max_tokens: 256, messages: [] }, {
+      caller: "analyzer",
+      provider: "deepseek",
+    });
+
+    const row = testDb.prepare("SELECT * FROM llm_calls LIMIT 1").get() as LlmCallRecord & {
+      provider: string;
+    };
+    // miss tokens → input; hit tokens → cache_read; no cache-write on DeepSeek
+    expect(row.input_tokens).toBe(80);
+    expect(row.cache_read_tokens).toBe(20);
+    expect(row.output_tokens).toBe(50);
+    expect(row.cache_create_tokens).toBe(0);
+    expect(row.provider).toBe("deepseek");
+    expect(row.cost_cents).toBeGreaterThan(0);
+  });
+
+  test("surfaces reasoning_content as a trailing thinking block", async () => {
+    globalThis.fetch = (async () =>
+      makeOpenAIResponse({
+        content: "the answer",
+        reasoning: "let me think",
+      })) as unknown as typeof globalThis.fetch;
+
+    const result = await createMessage(
+      { model: "deepseek-v4-pro", max_tokens: 256, messages: [{ role: "user", content: "q" }] },
+      { caller: "drafter", provider: "deepseek" },
+    );
+
+    // Text stays at [0] so callers reading content[0] still work; thinking trails
+    expect(result.content[0]).toEqual({ type: "text", text: "the answer", citations: null });
+    expect(result.content[1]?.type).toBe("thinking");
+  });
+
+  test("byProvider aggregation attributes DeepSeek calls", async () => {
+    globalThis.fetch = (async () => makeOpenAIResponse()) as unknown as typeof globalThis.fetch;
+
+    await createMessage({ model: "deepseek-v4-pro", max_tokens: 256, messages: [] }, {
+      caller: "analyzer",
+      provider: "deepseek",
+    });
+
+    const stats = getUsageStats();
+    const deepseekEntry = stats.byProvider.find((p) => p.provider === "deepseek");
+    expect(deepseekEntry?.calls).toBe(1);
+  });
+
+  test("maps HTTP errors to retryable/non-retryable behavior", async () => {
+    // 400 is non-retryable — should fail immediately after a single call
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return { ok: false, status: 400, text: async () => "bad request" } as unknown as Response;
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      createMessage({ model: "deepseek-v4-pro", max_tokens: 256, messages: [] }, {
+        caller: "analyzer",
+        provider: "deepseek",
+      }),
+    ).rejects.toThrow();
+    expect(calls).toBe(1);
   });
 });

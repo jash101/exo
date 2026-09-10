@@ -24,8 +24,10 @@ async function selectFirstThread(page: Page): Promise<void> {
 
 /** Get the currently highlighted row's text */
 async function getSelectedRowText(page: Page): Promise<string | null> {
-  // The highlighted row has bg-blue-600 class on the outer div
-  const selected = page.locator(".overflow-y-auto div[data-thread-id].bg-blue-600").first();
+  // The highlighted row carries data-selected='true' on the outer div
+  const selected = page
+    .locator(".overflow-y-auto div[data-thread-id][data-selected='true']")
+    .first();
   if (await selected.isVisible().catch(() => false)) {
     return selected.textContent();
   }

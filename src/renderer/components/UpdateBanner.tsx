@@ -51,7 +51,7 @@ export function UpdateBanner() {
 
   if (status.state === "available") {
     return (
-      <div className="titlebar-no-drag flex items-center gap-2 px-3 py-1.5 bg-indigo-600 dark:bg-indigo-500 rounded-lg text-sm shadow-sm">
+      <div className="titlebar-no-drag flex items-center gap-2 px-3 py-1.5 bg-blue-600 dark:bg-blue-500 rounded-lg text-sm shadow-sm">
         <svg
           className="w-4 h-4 text-white flex-shrink-0"
           fill="none"
@@ -70,13 +70,13 @@ export function UpdateBanner() {
         </span>
         <button
           onClick={handleDownload}
-          className="px-2.5 py-0.5 text-xs font-semibold text-indigo-600 dark:text-indigo-700 bg-white hover:bg-indigo-50 dark:hover:bg-indigo-100 rounded transition-colors"
+          className="px-2.5 py-0.5 text-xs font-semibold text-blue-600 dark:text-blue-700 bg-white hover:bg-blue-50 dark:hover:bg-blue-100 rounded transition-colors"
         >
           Download
         </button>
         <button
           onClick={() => setDismissed(true)}
-          className="p-1 text-indigo-200 hover:text-white transition-colors"
+          className="p-1 text-blue-200 hover:text-white transition-colors"
           title="Dismiss"
         >
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -94,7 +94,7 @@ export function UpdateBanner() {
 
   if (status.state === "downloading") {
     return (
-      <div className="titlebar-no-drag flex items-center gap-2 px-3 py-1.5 bg-indigo-600 dark:bg-indigo-500 rounded-lg text-sm shadow-sm">
+      <div className="titlebar-no-drag flex items-center gap-2 px-3 py-1.5 bg-blue-600 dark:bg-blue-500 rounded-lg text-sm shadow-sm">
         <svg
           className="w-4 h-4 text-white animate-spin flex-shrink-0"
           fill="none"
@@ -116,14 +116,14 @@ export function UpdateBanner() {
         </svg>
         <span className="text-white font-medium whitespace-nowrap">Downloading...</span>
         <div className="w-20">
-          <div className="w-full bg-indigo-400/40 rounded-full h-1.5">
+          <div className="w-full bg-blue-400/40 rounded-full h-1.5">
             <div
               className="bg-white h-1.5 rounded-full transition-all duration-300"
               style={{ width: `${status.progress}%` }}
             />
           </div>
         </div>
-        <span className="text-indigo-100 text-xs tabular-nums">{status.progress}%</span>
+        <span className="text-blue-100 text-xs tabular-nums">{status.progress}%</span>
       </div>
     );
   }

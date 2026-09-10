@@ -124,7 +124,7 @@ If the email requires a decision or action that I must take personally (like rev
 // Output format suffix appended automatically — never shown to the user
 export const DRAFT_FORMAT_SUFFIX = `
 
-Output ONLY the email body text - no subject line, no "Dear X" if not needed, no signature (I have one set up). Just the reply content. Do NOT include any signature like "--Sent by Exo" or "Sent from Exo" — the app appends its own signature automatically.
+Output ONLY the email body text - no subject line, no "Dear X" if not needed, no signature (I have one set up). Just the reply content. Do NOT include any signature like "--Sent by Flywheel Email" or "Sent from Flywheel Email" — the app appends its own signature automatically.
 
 FORMATTING: Write plain text paragraphs separated by blank lines. Do NOT use HTML tags of any kind (<p>, <br>, <div>, <b>, <i>, <ul>, <ol>, etc.). For bold, wrap text in double asterisks like **bold text**. For italic, wrap text in single asterisks like *italic text*. For bullet lists, use lines starting with "- ". For numbered lists, use "1. ", "2. ", etc. The email client converts plain text structure to rich formatting automatically.`;
 
@@ -352,8 +352,8 @@ export function resolveModelId(tier: ModelTier): string {
 }
 
 // LLM Provider types — supports routing features to different backends
-export const LLM_PROVIDERS = ["anthropic", "ollama-cloud"] as const;
-export const LlmProviderSchema = z.enum(["anthropic", "ollama-cloud"]);
+export const LLM_PROVIDERS = ["anthropic", "ollama-cloud", "deepseek"] as const;
+export const LlmProviderSchema = z.enum(["anthropic", "ollama-cloud", "deepseek"]);
 export type LlmProvider = z.infer<typeof LlmProviderSchema>;
 
 // Search backends for sender lookup. "anthropic" uses Claude's built-in
@@ -416,6 +416,23 @@ export const OllamaCloudConfigSchema = z.object({
  *  Extensions card — renderer-safe (same pattern as DEFAULT_OLLAMA_MODEL). */
 export const DEFAULT_HOSTLER_HARNESS = "opencode";
 
+/**
+ * DeepSeek's primary API surface is OpenAI-compatible: base URL
+ * https://api.deepseek.com with a Bearer API key and POST /chat/completions
+ * (the Anthropic-compatible surface at /anthropic proved unreliable for our
+ * callers, so we speak the OpenAI wire format natively instead).
+ */
+export const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+export const DEEPSEEK_CHAT_COMPLETIONS_URL = `${DEEPSEEK_BASE_URL}/chat/completions`;
+export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
+
+export const DeepSeekConfigSchema = z.object({
+  apiKey: z.string().default(""),
+  defaultModel: z.string().default(DEFAULT_DEEPSEEK_MODEL),
+  featureModels: z.record(z.string(), z.string()).optional(),
+});
+
+
 // Config schema
 export const ConfigSchema = z.object({
   maxEmails: z.number().default(50),
@@ -462,13 +479,6 @@ export const ConfigSchema = z.object({
   // Defaults intentionally not declared here: ConfigSchema is only used for
   // type inference + validation. Runtime defaults are applied in getConfig()
   // because they depend on configVersion (legacy installs opt out, fresh
-  // installs opt in).
-  posthog: z
-    .object({
-      enabled: z.boolean(),
-      sessionReplay: z.boolean(),
-    })
-    .optional(),
   keyboardBindings: z.enum(["superhuman", "gmail"]).default("superhuman"),
   // Persists the last-selected inbox view across restarts.
   //   string id  → that specific account
@@ -546,6 +556,7 @@ export const ConfigSchema = z.object({
   // resolveBackgroundAgentProviderId below.
   backgroundAgentProvider: z.string().optional(),
   ollamaCloud: OllamaCloudConfigSchema.optional(),
+  deepseek: DeepSeekConfigSchema.optional(),
   featureProviders: z.record(z.string(), LlmProviderSchema).optional(),
   configVersion: z.number().optional(),
 });
@@ -1071,6 +1082,8 @@ export type ScheduledMessage = {
   bodyText?: string;
   inReplyTo?: string;
   references?: string;
+  /** Metadata only in IPC responses — base64 `content` is stripped; the full payload stays in the main process */
+  attachments?: ComposeAttachment[];
   scheduledAt: number; // Unix timestamp in ms
   status: ScheduledMessageStatus;
   errorMessage?: string;
